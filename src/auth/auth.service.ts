@@ -24,7 +24,7 @@ export class AuthService {
   async login(email: string, password: string) {
     const user = await this.usersService.findByEmail(email);
 
-    if (!user) {
+    if (!user || !user.password) {
       throw new UnauthorizedException('Email sau parolă incorectă');
     }
 
@@ -39,5 +39,24 @@ export class AuthService {
     return {
       access_token: this.jwtService.sign(payload),
     };
+  }
+
+  async validateOAuthLogin(profile: any): Promise<string> {
+    const { email, firstName, lastName } = profile;
+
+    let user = await this.usersService.findByEmail(email);
+
+    if (!user) {
+      user = await this.usersService.create({
+        email,
+        firstName,
+        lastName,
+        provider: 'google',
+      });
+    }
+
+    const payload = { sub: user.id, email: user.email };
+
+    return this.jwtService.sign(payload);
   }
 }
