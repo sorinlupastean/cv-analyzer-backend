@@ -6,11 +6,13 @@ import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { JobsModule } from './jobs/jobs.module';
 import { CvsModule } from './cvs/cvs.module';
-
+import { join } from 'path';
+import { MailModule } from './mail/mail.module';
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+      envFilePath: join(process.cwd(), '.env'),
     }),
 
     TypeOrmModule.forRoot({
@@ -28,6 +30,7 @@ import { CvsModule } from './cvs/cvs.module';
     UsersModule,
     JobsModule,
     CvsModule,
+    MailModule,
   ],
 })
 export class AppModule {}
