@@ -9,7 +9,7 @@ import { stat } from 'fs/promises';
 import { Repository } from 'typeorm';
 import { Cv } from './entities/cv.entity';
 import { Job } from '../jobs/entities/job.entity';
-import { GeminiService } from '../ai/gemini.service';
+import { CandidateAnalysisService } from '../analysis/candidate-analysis.service';
 import { MailService } from '../mail/mail.service';
 import { SendEmailDto } from './dto/send-email.dto';
 
@@ -20,7 +20,7 @@ export class CvsService {
   constructor(
     @InjectRepository(Cv) private readonly cvRepo: Repository<Cv>,
     @InjectRepository(Job) private readonly jobRepo: Repository<Job>,
-    private readonly gemini: GeminiService,
+    private readonly candidateAnalysisService: CandidateAnalysisService,
     private readonly mailService: MailService,
   ) {}
 
@@ -43,7 +43,10 @@ export class CvsService {
         'Postul este închis. Nu poți încărca CV-uri.',
       );
     }
-    if (!file) throw new BadRequestException('Lipsește fișierul');
+
+    if (!file) {
+      throw new BadRequestException('Lipsește fișierul');
+    }
 
     const cv = this.cvRepo.create({
       job,
@@ -76,7 +79,11 @@ export class CvsService {
       where: { id: cvId },
       relations: { job: true },
     });
-    if (!cv) throw new NotFoundException('CV-ul nu a fost găsit');
+
+    if (!cv) {
+      throw new NotFoundException('CV-ul nu a fost găsit');
+    }
+
     return cv;
   }
 
@@ -84,6 +91,7 @@ export class CvsService {
     const cv = await this.cvRepo.findOne({ where: { id: cvId } });
     if (!cv) throw new NotFoundException('CV-ul nu a fost găsit');
     if (!cv.filePath) throw new BadRequestException('CV nu are filePath');
+
     return {
       filePath: cv.filePath,
       fileName: cv.fileName,
@@ -94,6 +102,7 @@ export class CvsService {
   async remove(cvId: number) {
     const cv = await this.cvRepo.findOne({ where: { id: cvId } });
     if (!cv) throw new NotFoundException('CV-ul nu a fost găsit');
+
     await this.cvRepo.remove(cv);
     return { ok: true as const };
   }
@@ -103,13 +112,19 @@ export class CvsService {
       where: { id: cvId },
       relations: { job: true },
     });
-    if (!cv) throw new NotFoundException('CV-ul nu a fost găsit');
+
+    if (!cv) {
+      throw new NotFoundException('CV-ul nu a fost găsit');
+    }
+
     if (!cv.job || cv.job.id !== jobId) {
       throw new BadRequestException('CV-ul nu aparține acestui job');
     }
 
     const job = await this.jobRepo.findOne({ where: { id: jobId } });
-    if (!job) throw new NotFoundException('Postul nu a fost găsit');
+    if (!job) {
+      throw new NotFoundException('Postul nu a fost găsit');
+    }
 
     if ((job as any).status === 'CLOSED') {
       throw new BadRequestException(
@@ -143,34 +158,33 @@ export class CvsService {
       `Analyze CV vs Job: cvId=${cv.id} jobId=${job.id} file="${cv.fileName}"`,
     );
 
-    const result = await this.gemini.analyzeCvAgainstJob(
-      cv.filePath,
-      cv.mimeType || 'application/pdf',
+    const result = await this.candidateAnalysisService.analyzeCandidate({
+      filePath: cv.filePath,
+      mimeType: cv.mimeType || 'application/pdf',
       jobText,
-    );
+      githubUsernameOrUrl: null,
+    });
 
-    // campuri pentru liste / cards
     cv.candidateName = result.candidateName || cv.candidateName || '';
-    cv.matchScore = result.matchScore ?? 0;
+    cv.matchScore = result.finalScore ?? 0;
     cv.status = 'Analizat';
     cv.skills = result.skills ?? [];
     cv.analysisSummary = result.summary || null;
 
-    // campuri noi pentru UI
     cv.email = result.email ?? null;
     cv.phone = result.phone ?? null;
     cv.languages = result.languages ?? [];
     cv.domains = result.domains ?? [];
 
-    // restul datelor pentru CVDetailsPage
     cv.analysisRaw = result;
 
     return this.cvRepo.save(cv);
   }
 
   async sendEmail(cvId: number, dto: SendEmailDto) {
-    if (!cvId || Number.isNaN(cvId))
+    if (!cvId || Number.isNaN(cvId)) {
       throw new BadRequestException('CV invalid');
+    }
 
     const hasText = typeof dto.text === 'string' && dto.text.trim().length > 0;
     const hasHtml = typeof dto.html === 'string' && dto.html.trim().length > 0;
@@ -187,5 +201,37 @@ export class CvsService {
     });
 
     return { ok: true };
+  }
+
+  async picker(q: string, limit = 20) {
+    const take = Math.min(50, Math.max(5, limit));
+    const term = q.trim().toLowerCase();
+
+    const qb = this.cvRepo.createQueryBuilder('cv');
+
+    if (term) {
+      qb.where('LOWER(cv.candidateName) LIKE :t OR LOWER(cv.email) LIKE :t', {
+        t: `%${term}%`,
+      });
+    }
+
+    qb.orderBy('cv.updatedAt', 'DESC').take(take);
+
+    const rows = await qb.getMany();
+
+    return rows
+      .filter((r: any) => r?.candidateName && r?.email)
+      .map((r: any) => {
+        const fullName = String(r.candidateName || '').trim();
+        const email = String(r.email || '').trim();
+        const id = Number(r.id);
+
+        return {
+          id,
+          fullName,
+          email,
+          label: `${fullName} • ${email} • CV #${id}`,
+        };
+      });
   }
 }

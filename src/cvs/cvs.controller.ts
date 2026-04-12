@@ -1,20 +1,21 @@
 import {
   BadRequestException,
+  Body,
   Controller,
   Delete,
   Get,
   Param,
   ParseIntPipe,
   Post,
+  Query,
   Res,
   UploadedFile,
   UseInterceptors,
-  Body,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
-import { extname, resolve } from 'path';
 import { existsSync, mkdirSync } from 'fs';
+import { extname, resolve } from 'path';
 import type { Response } from 'express';
 
 import { CvsService } from './cvs.service';
@@ -35,7 +36,6 @@ export class CvsController {
     return this.cvsService.listForJob(jobId);
   }
 
-  // ✅ upload fișier pentru un job selectat
   @Post('jobs/:jobId/cvs/upload')
   @UseInterceptors(
     FileInterceptor('file', {
@@ -50,19 +50,21 @@ export class CvsController {
           cb(null, `${unique}${safeExt}`);
         },
       }),
-      limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+      limits: { fileSize: 10 * 1024 * 1024 },
       fileFilter: (_req, file, cb) => {
         const allowed = [
           'application/pdf',
           'application/msword',
           'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         ];
+
         if (!allowed.includes(file.mimetype)) {
           return cb(
             new BadRequestException('Accept doar PDF, DOC, DOCX'),
             false,
           );
         }
+
         cb(null, true);
       },
     }),
@@ -71,9 +73,10 @@ export class CvsController {
     @Param('jobId', ParseIntPipe) jobId: number,
     @UploadedFile() file: Express.Multer.File,
   ) {
-    if (!file) throw new BadRequestException('Fișier lipsă');
+    if (!file) {
+      throw new BadRequestException('Fișier lipsă');
+    }
 
-    // normalizează absolut, ca să nu ai mismatch în prod/dist/docker
     file.path = resolve(file.path).replace(/\\/g, '/');
 
     return this.cvsService.uploadForJob(jobId, file);
@@ -84,7 +87,6 @@ export class CvsController {
     return this.cvsService.findOne(cvId);
   }
 
-  // ✅ ruta NOUĂ (recomandată)
   @Post('jobs/:jobId/cvs/:cvId/analyze')
   analyzeForJob(
     @Param('jobId', ParseIntPipe) jobId: number,
@@ -93,7 +95,6 @@ export class CvsController {
     return this.cvsService.analyzeCv(jobId, cvId);
   }
 
-  // ✅ ruta VECHE (compatibilitate cu frontend-ul tău: POST /cvs/:cvId/analyze)
   @Post('cvs/:cvId/analyze')
   async analyzeLegacy(@Param('cvId', ParseIntPipe) cvId: number) {
     const cv = await this.cvsService.findOne(cvId);
@@ -131,6 +132,11 @@ export class CvsController {
     @Body() dto: SendEmailDto,
   ) {
     return this.cvsService.sendEmail(cvId, dto);
+  }
+
+  @Get('picker')
+  picker(@Query('q') q = '', @Query('limit') limit = '20') {
+    return this.cvsService.picker(q, Number(limit) || 20);
   }
 
   @Delete('cvs/:cvId')
