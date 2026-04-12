@@ -10,14 +10,24 @@ async function bootstrap() {
     port: process.env.DATABASE_PORT,
     db: process.env.DATABASE_NAME,
   });
+
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
-  app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads' });
+
+  app.useStaticAssets(join(process.cwd(), 'uploads'), {
+    prefix: '/uploads',
+  });
+
   app.enableCors({
     origin: 'http://localhost:3000',
     credentials: true,
   });
 
-  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+    }),
+  );
 
   await app.listen(5000);
 }

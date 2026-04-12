@@ -8,6 +8,8 @@ import { JobsModule } from './jobs/jobs.module';
 import { CvsModule } from './cvs/cvs.module';
 import { join } from 'path';
 import { MailModule } from './mail/mail.module';
+import { InterviewsModule } from './interviews/interviews.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -31,6 +33,8 @@ import { MailModule } from './mail/mail.module';
     JobsModule,
     CvsModule,
     MailModule,
+    InterviewsModule,
+    DashboardModule,
   ],
 })
 export class AppModule {}
