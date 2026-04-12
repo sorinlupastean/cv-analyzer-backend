@@ -29,10 +29,15 @@ export class CandidateAnalysisService {
       params.jobText,
     );
 
+    const githubSource =
+      params.githubUsernameOrUrl?.trim() ||
+      cvAnalysis.githubUrl?.trim() ||
+      null;
+
     let githubAnalysis: GithubProfileAnalysis | null = null;
-    if (params.githubUsernameOrUrl?.trim()) {
+    if (githubSource) {
       githubAnalysis = await this.githubAnalyzerService.analyzeGithubProfile(
-        params.githubUsernameOrUrl,
+        githubSource,
         params.jobText,
         cvAnalysis.skills,
       );

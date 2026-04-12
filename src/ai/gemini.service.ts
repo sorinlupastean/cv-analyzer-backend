@@ -35,9 +35,11 @@ Return ONLY valid JSON matching exactly this shape:
   "candidateName": string,
   "email": string | null,
   "phone": string | null,
+  "githubUrl": string | null,
 
   "languages": string[],
   "domains": string[],
+  
 
   "skills": string[],
   "experience": [
@@ -280,10 +282,18 @@ ${cvText}
           .filter((ed: any) => ed.school.length > 0)
       : [];
 
+    const normalizeGithubUrl = (v: unknown) => {
+      const s = typeof v === 'string' ? v.trim() : '';
+      if (!s) return null;
+      if (s.includes('github.com')) return s;
+      return null;
+    };
+
     return {
       candidateName: String(obj.candidateName || '').trim(),
       email: normalizeEmail(obj.email),
       phone: normalizePhone(obj.phone),
+      githubUrl: normalizeGithubUrl(obj.githubUrl),
 
       languages: toArrayStrings(obj.languages, 10),
       domains: toArrayStrings(obj.domains, 10),

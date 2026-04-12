@@ -24,6 +24,7 @@ export type GeminiJobCvAnalysis = {
   candidateName: string;
   email: string | null;
   phone: string | null;
+  githubUrl: string | null;
 
   languages: string[];
   domains: string[];
