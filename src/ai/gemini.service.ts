@@ -1,50 +1,13 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { GoogleGenAI } from '@google/genai';
 import { readFile } from 'fs/promises';
-
-export type Recommendation = 'INVITA' | 'REVIZUIRE' | 'RESPINGE';
-
-export type CandidateExperience = {
-  title: string;
-  company?: string;
-  startDate?: string;
-  endDate?: string;
-  location?: string;
-  responsibilities?: string[];
-  technologies?: string[];
-};
-
-export type CandidateEducation = {
-  school: string;
-  degree?: string;
-  field?: string;
-  startDate?: string;
-  endDate?: string;
-};
-
-export type GeminiJobCvAnalysis = {
-  candidateName: string;
-  email: string | null;
-  phone: string | null;
-
-  languages: string[];
-  domains: string[];
-
-  skills: string[];
-  experience: CandidateExperience[];
-  education: CandidateEducation[];
-
-  matchedRequirements: string[];
-  missingRequirements: string[];
-  redFlags: string[];
-
-  summary: string;
-  matchScore: number;
-  recommendation: Recommendation;
-
-  reasoningShort: string;
-  evidence: string[];
-};
+import mammoth from 'mammoth';
+import {
+  CandidateEducation,
+  CandidateExperience,
+  GeminiJobCvAnalysis,
+  Recommendation,
+} from '../analysis/analysis.types';
 
 @Injectable()
 export class GeminiService {
@@ -64,8 +27,7 @@ export class GeminiService {
       throw new BadRequestException('Lipsește GEMINI_API_KEY în .env');
     }
 
-    const bytes = await readFile(filePath);
-    const base64 = Buffer.from(bytes).toString('base64');
+    const mt = String(mimeType || '').toLowerCase();
 
     const schema = `
 Return ONLY valid JSON matching exactly this shape:
@@ -131,12 +93,12 @@ Rules:
   4) Soft/other (0..10)
 `.trim();
 
-    const prompt = `
+    const promptBase = `
 You are an ATS recruiter assistant.
 
 You will receive:
 1) JOB requirements and description
-2) The candidate CV as a document (PDF/DOC/DOCX)
+2) The candidate CV as a document (PDF) OR extracted text (DOCX)
 
 Task:
 - Extract structured candidate data
@@ -150,35 +112,105 @@ ${jobText}
 ${schema}
 `.trim();
 
-    const res = await this.client.models.generateContent({
-      model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            { text: prompt },
-            {
-              inlineData: {
-                mimeType: mimeType || 'application/pdf',
-                data: base64,
+    // -----------------------
+    // CASE 1: PDF (supported as inlineData)
+    // -----------------------
+    if (!mt || mt === 'application/pdf') {
+      const bytes = await readFile(filePath);
+      const base64 = Buffer.from(bytes).toString('base64');
+
+      const res = await this.client.models.generateContent({
+        model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: promptBase },
+              {
+                inlineData: {
+                  mimeType: 'application/pdf',
+                  data: base64,
+                },
               },
-            },
-          ],
-        },
-      ],
-    });
+            ],
+          },
+        ],
+      });
 
-    const text = res.text ?? '';
-    const jsonStr = this.extractJson(text);
+      const text = res.text ?? '';
+      const jsonStr = this.extractJson(text);
 
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(jsonStr);
-    } catch {
-      throw new BadRequestException('Gemini a returnat un JSON invalid.');
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(jsonStr);
+      } catch {
+        throw new BadRequestException('Gemini a returnat un JSON invalid.');
+      }
+
+      return this.sanitizeAnalysis(parsed);
     }
 
-    return this.sanitizeAnalysis(parsed);
+    // -----------------------
+    // CASE 2: DOCX (extract text, send as plain text)
+    // -----------------------
+    const isDocx =
+      mt.includes(
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      ) || mt.includes('application/docx');
+
+    if (isDocx) {
+      const bytes = await readFile(filePath);
+
+      let cvText = '';
+      try {
+        const extracted = await mammoth.extractRawText({ buffer: bytes });
+        cvText = String(extracted?.value || '').trim();
+      } catch {
+        throw new BadRequestException('Nu pot extrage text din DOCX.');
+      }
+
+      if (!cvText || cvText.length < 50) {
+        throw new BadRequestException(
+          'DOCX pare gol sau textul extras este prea scurt pentru analiză.',
+        );
+      }
+
+      // limită defensivă (evită prompt prea mare)
+      if (cvText.length > 25000) {
+        cvText = cvText.slice(0, 25000);
+      }
+
+      const promptDocx = `
+${promptBase}
+
+CV (text extras din DOCX):
+${cvText}
+`.trim();
+
+      const res = await this.client.models.generateContent({
+        model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+        contents: [{ role: 'user', parts: [{ text: promptDocx }] }],
+      });
+
+      const text = res.text ?? '';
+      const jsonStr = this.extractJson(text);
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(jsonStr);
+      } catch {
+        throw new BadRequestException('Gemini a returnat un JSON invalid.');
+      }
+
+      return this.sanitizeAnalysis(parsed);
+    }
+
+    // -----------------------
+    // CASE 3: Other formats (DOC, etc.)
+    // -----------------------
+    throw new BadRequestException(
+      `Tip fișier nesuportat pentru analiză: ${mimeType}. Folosește PDF sau DOCX.`,
+    );
   }
 
   private sanitizeAnalysis(input: unknown): GeminiJobCvAnalysis {
