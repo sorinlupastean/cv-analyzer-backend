@@ -10,12 +10,12 @@ export class CreateJobDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(200)
-  title: string;
+  title!: string;
 
   @IsString()
   @IsNotEmpty()
   @MaxLength(120)
-  category: string;
+  category!: string;
 
   @IsString()
   @IsOptional()
@@ -25,18 +25,16 @@ export class CreateJobDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(60)
-  type: string;
+  type!: string;
 
   @IsString()
   @IsNotEmpty()
-  description: string;
+  description!: string;
 
-  // ✅ nou: requirements (ce caută jobul)
   @IsString()
   @IsNotEmpty()
-  requirements: string;
+  requirements!: string;
 
-  // ✅ nou: status (implicit ACTIVE dacă nu trimiți)
   @IsOptional()
   @IsIn(['ACTIVE', 'CLOSED'])
   status?: 'ACTIVE' | 'CLOSED';

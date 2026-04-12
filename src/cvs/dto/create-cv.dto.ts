@@ -11,25 +11,25 @@ import {
 export class CreateCvDto {
   @IsString()
   @IsNotEmpty()
-  fileName: string;
+  fileName!: string;
 
   @IsString()
   @IsNotEmpty()
-  candidateName: string;
+  candidateName!: string;
 
   @IsDateString()
-  uploadDate: string;
+  uploadDate!: string;
 
   @IsInt()
   @Min(0)
   @Max(100)
-  matchScore: number;
+  matchScore!: number;
 
   @IsString()
   @IsNotEmpty()
-  status: string;
+  status!: string;
 
   @IsArray()
   @IsString({ each: true })
-  skills: string[];
+  skills!: string[];
 }

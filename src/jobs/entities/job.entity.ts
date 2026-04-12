@@ -12,34 +12,32 @@ export type JobStatus = 'ACTIVE' | 'CLOSED';
 @Entity()
 export class Job {
   @PrimaryGeneratedColumn()
-  id: number;
+  id!: number;
 
   @Column({ length: 200 })
-  title: string;
+  title!: string;
 
   @Column({ length: 120 })
-  category: string;
+  category!: string;
 
   @Column({ length: 120, default: '' })
-  location: string;
+  location!: string;
 
   @Column({ length: 60 })
-  type: string;
+  type!: string;
 
   @Column({ type: 'text' })
-  description: string;
+  description!: string;
 
-  // ✅ nou: requirements separat
   @Column({ type: 'text', default: '' })
-  requirements: string;
+  requirements!: string;
 
-  // ✅ nou: status job
   @Column({ type: 'varchar', length: 10, default: 'ACTIVE' })
-  status: JobStatus;
+  status!: JobStatus;
 
   @CreateDateColumn()
-  createdAt: Date;
+  createdAt!: Date;
 
   @OneToMany(() => Cv, (cv) => cv.job, { cascade: true })
-  cvs: Cv[];
+  cvs!: Cv[];
 }
