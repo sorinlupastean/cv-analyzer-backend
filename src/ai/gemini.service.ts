@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { GoogleGenAI } from '@google/genai';
 import { readFile } from 'fs/promises';
 import mammoth from 'mammoth';
@@ -9,13 +9,49 @@ import {
   Recommendation,
 } from '../analysis/analysis.types';
 
+const RETRY_DELAYS_MS = [3000, 6000, 12000];
+
 @Injectable()
 export class GeminiService {
+  private readonly logger = new Logger(GeminiService.name);
   private client: GoogleGenAI;
 
   constructor() {
     const apiKey = process.env.GEMINI_API_KEY || '';
     this.client = new GoogleGenAI({ apiKey });
+  }
+
+  private async withRetry<T>(fn: () => Promise<T>): Promise<T> {
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+      try {
+        return await fn();
+      } catch (err: any) {
+        lastError = err;
+
+        const msg = String(err?.message || err || '');
+        const is503 =
+          msg.includes('503') ||
+          msg.includes('UNAVAILABLE') ||
+          msg.includes('high demand') ||
+          msg.includes('overloaded');
+
+        if (!is503) throw err;
+
+        if (attempt < RETRY_DELAYS_MS.length) {
+          const delay = RETRY_DELAYS_MS[attempt];
+          this.logger.warn(
+            `Gemini 503 — retry ${attempt + 1}/${RETRY_DELAYS_MS.length} după ${delay}ms...`,
+          );
+          await new Promise((res) => setTimeout(res, delay));
+        }
+      }
+    }
+
+    throw new BadRequestException(
+      'Gemini API este supraîncărcat. Te rugăm să încerci din nou în câteva minute.',
+    );
   }
 
   async analyzeCvAgainstJob(
@@ -39,7 +75,6 @@ Return ONLY valid JSON matching exactly this shape:
 
   "languages": string[],
   "domains": string[],
-  
 
   "skills": string[],
   "experience": [
@@ -76,6 +111,7 @@ Return ONLY valid JSON matching exactly this shape:
 
 Rules:
 - Extract email/phone ONLY if present in CV, else null (no guessing)
+- Extract githubUrl ONLY if a github.com URL or username is present in CV, else null
 - matchScore must be an integer 0..100
 - skills distinct, max 30
 - experience max 10 items (do your best to extract from CV)
@@ -114,30 +150,29 @@ ${jobText}
 ${schema}
 `.trim();
 
-    // -----------------------
-    // CASE 1: PDF (supported as inlineData)
-    // -----------------------
     if (!mt || mt === 'application/pdf') {
       const bytes = await readFile(filePath);
       const base64 = Buffer.from(bytes).toString('base64');
 
-      const res = await this.client.models.generateContent({
-        model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              { text: promptBase },
-              {
-                inlineData: {
-                  mimeType: 'application/pdf',
-                  data: base64,
+      const res = await this.withRetry(() =>
+        this.client.models.generateContent({
+          model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { text: promptBase },
+                {
+                  inlineData: {
+                    mimeType: 'application/pdf',
+                    data: base64,
+                  },
                 },
-              },
-            ],
-          },
-        ],
-      });
+              ],
+            },
+          ],
+        }),
+      );
 
       const text = res.text ?? '';
       const jsonStr = this.extractJson(text);
@@ -152,9 +187,6 @@ ${schema}
       return this.sanitizeAnalysis(parsed);
     }
 
-    // -----------------------
-    // CASE 2: DOCX (extract text, send as plain text)
-    // -----------------------
     const isDocx =
       mt.includes(
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -177,7 +209,6 @@ ${schema}
         );
       }
 
-      // limită defensivă (evită prompt prea mare)
       if (cvText.length > 25000) {
         cvText = cvText.slice(0, 25000);
       }
@@ -189,10 +220,12 @@ CV (text extras din DOCX):
 ${cvText}
 `.trim();
 
-      const res = await this.client.models.generateContent({
-        model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-        contents: [{ role: 'user', parts: [{ text: promptDocx }] }],
-      });
+      const res = await this.withRetry(() =>
+        this.client.models.generateContent({
+          model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+          contents: [{ role: 'user', parts: [{ text: promptDocx }] }],
+        }),
+      );
 
       const text = res.text ?? '';
       const jsonStr = this.extractJson(text);
@@ -207,9 +240,6 @@ ${cvText}
       return this.sanitizeAnalysis(parsed);
     }
 
-    // -----------------------
-    // CASE 3: Other formats (DOC, etc.)
-    // -----------------------
     throw new BadRequestException(
       `Tip fișier nesuportat pentru analiză: ${mimeType}. Folosește PDF sau DOCX.`,
     );
@@ -235,7 +265,6 @@ ${cvText}
     const normalizeEmail = (v: unknown) => {
       const s = typeof v === 'string' ? v.trim() : '';
       if (!s) return null;
-      // simplu, doar validare minimă
       if (!s.includes('@') || s.length < 5) return null;
       return s;
     };
@@ -246,6 +275,13 @@ ${cvText}
       const digits = s.replace(/[^\d+]/g, '');
       if (digits.length < 8) return null;
       return s;
+    };
+
+    const normalizeGithubUrl = (v: unknown) => {
+      const s = typeof v === 'string' ? v.trim() : '';
+      if (!s) return null;
+      if (s.includes('github.com') || /^[a-zA-Z0-9-]+$/.test(s)) return s;
+      return null;
     };
 
     const recRaw = String(obj.recommendation || 'REVIZUIRE').toUpperCase();
@@ -281,13 +317,6 @@ ${cvText}
           }))
           .filter((ed: any) => ed.school.length > 0)
       : [];
-
-    const normalizeGithubUrl = (v: unknown) => {
-      const s = typeof v === 'string' ? v.trim() : '';
-      if (!s) return null;
-      if (s.includes('github.com')) return s;
-      return null;
-    };
 
     return {
       candidateName: String(obj.candidateName || '').trim(),
