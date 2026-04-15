@@ -110,6 +110,8 @@ Return ONLY valid JSON matching exactly this shape:
 }
 
 Rules:
+- Return all free-text output in Romanian.
+- Use Romanian month names for any date labels when possible.
 - Extract email/phone ONLY if present in CV, else null (no guessing)
 - Extract githubUrl ONLY if a github.com URL or username is present in CV, else null
 - matchScore must be an integer 0..100
@@ -122,6 +124,10 @@ Rules:
 - summary max 1200 chars
 - reasoningShort max 700 chars, bullet style, short lines
 - evidence max 10 items, each item max 120 chars, paraphrase, do not quote long text
+- For experience and education dates:
+  - If the CV mentions only a single month/year for an activity, put that same value in both startDate and endDate.
+  - If the activity is still ongoing, set endDate to "Prezent".
+  - Prefer the format "Martie 2023" instead of English month names.
 - CRITICAL: evaluate FIT strictly vs JOB.
   If JOB is "oier" and candidate CV is only IT or construction, matchScore must be LOW (0..25) and recommendation should be RESPINGE or REVIZUIRE with clear redFlags.
 - Use this scoring rubric:
