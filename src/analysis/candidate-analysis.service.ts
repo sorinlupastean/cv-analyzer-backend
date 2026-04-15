@@ -31,7 +31,7 @@ export class CandidateAnalysisService {
 
     const githubSource =
       params.githubUsernameOrUrl?.trim() ||
-      cvAnalysis.githubUrl?.trim() ||
+      (cvAnalysis as any).githubUrl?.trim() ||
       null;
 
     let githubAnalysis: GithubProfileAnalysis | null = null;
