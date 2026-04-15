@@ -11,6 +11,7 @@ import {
   includesAny,
   mergeUnique,
   safeLower,
+  subtractStrings,
   truncate,
   uniqueStrings,
 } from './analysis.utils';
@@ -171,10 +172,11 @@ export class GithubAnalyzerService {
     const matchedRequirements = mergeUnique(
       ...analyzedRepos.map((r) => r.matchedJobSkills),
     ).slice(0, 15);
-
-    const missingRequirements = mergeUnique(
-      ...analyzedRepos.map((r) => r.missingJobSkills),
-    ).slice(0, 15);
+    const missingRequirements = subtractStrings(
+      mergeUnique(...analyzedRepos.map((r) => r.missingJobSkills)),
+      matchedRequirements,
+      15,
+    );
 
     const evidence = uniqueStrings(
       analyzedRepos.flatMap((r) => r.evidence),

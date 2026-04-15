@@ -8,9 +8,9 @@ import {
 } from './analysis.types';
 import {
   clampInt,
-  mergeUnique,
   normalizeRecommendation,
   scoreToRecommendation,
+  subtractStrings,
   truncate,
   uniqueStrings,
 } from './analysis.utils';
@@ -59,11 +59,16 @@ export class FinalAnalysisService {
       20,
     );
 
-    const missingRequirements = uniqueStrings(
+    const missingRequirementsRaw = uniqueStrings(
       [
         ...cvAnalysis.missingRequirements,
         ...(hasUsefulGithub ? githubAnalysis!.missingRequirements : []),
       ],
+      20,
+    );
+    const missingRequirements = subtractStrings(
+      missingRequirementsRaw,
+      matchedRequirements,
       20,
     );
 

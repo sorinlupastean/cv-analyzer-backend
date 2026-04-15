@@ -10,6 +10,7 @@ import { Repository } from 'typeorm';
 import { Cv } from './entities/cv.entity';
 import { Job } from '../jobs/entities/job.entity';
 import { CandidateAnalysisService } from '../analysis/candidate-analysis.service';
+import { subtractStrings } from '../analysis/analysis.utils';
 import { MailService } from '../mail/mail.service';
 import { SendEmailDto } from './dto/send-email.dto';
 
@@ -28,10 +29,12 @@ export class CvsService {
     const job = await this.jobRepo.findOne({ where: { id: jobId } });
     if (!job) throw new NotFoundException('Postul nu a fost găsit');
 
-    return this.cvRepo.find({
+    const rows = await this.cvRepo.find({
       where: { job: { id: jobId } },
       order: { createdAt: 'DESC' },
     });
+
+    return rows.map((cv) => this.sanitizeAnalysisOnRead(cv));
   }
 
   async uploadForJob(jobId: number, file: Express.Multer.File) {
@@ -84,7 +87,7 @@ export class CvsService {
       throw new NotFoundException('CV-ul nu a fost găsit');
     }
 
-    return cv;
+    return this.sanitizeAnalysisOnRead(cv);
   }
 
   async getFileInfo(cvId: number) {
@@ -179,6 +182,83 @@ export class CvsService {
     cv.analysisRaw = result;
 
     return this.cvRepo.save(cv);
+  }
+
+  private sanitizeAnalysisOnRead(cv: Cv) {
+    const raw = cv.analysisRaw as any;
+    if (!raw || typeof raw !== 'object') return cv;
+
+    const topMatched = Array.isArray(raw.matchedRequirements)
+      ? raw.matchedRequirements
+      : [];
+    const topMissing = Array.isArray(raw.missingRequirements)
+      ? raw.missingRequirements
+      : [];
+
+    const cleanedTopMatched = subtractStrings(topMatched, [], 20);
+    const cleanedTopMissing = subtractStrings(topMissing, cleanedTopMatched, 20);
+
+    const cvAnalysis = raw.cvAnalysis && typeof raw.cvAnalysis === 'object'
+      ? raw.cvAnalysis
+      : null;
+    const githubAnalysis =
+      raw.githubAnalysis && typeof raw.githubAnalysis === 'object'
+        ? raw.githubAnalysis
+        : null;
+
+    const cleanedCvAnalysis = cvAnalysis
+      ? {
+          ...cvAnalysis,
+          matchedRequirements: subtractStrings(
+            Array.isArray(cvAnalysis.matchedRequirements)
+              ? cvAnalysis.matchedRequirements
+              : [],
+            [],
+            15,
+          ),
+          missingRequirements: subtractStrings(
+            Array.isArray(cvAnalysis.missingRequirements)
+              ? cvAnalysis.missingRequirements
+              : [],
+            Array.isArray(cvAnalysis.matchedRequirements)
+              ? cvAnalysis.matchedRequirements
+              : [],
+            15,
+          ),
+        }
+      : null;
+
+    const cleanedGithubAnalysis = githubAnalysis
+      ? {
+          ...githubAnalysis,
+          matchedRequirements: subtractStrings(
+            Array.isArray(githubAnalysis.matchedRequirements)
+              ? githubAnalysis.matchedRequirements
+              : [],
+            [],
+            15,
+          ),
+          missingRequirements: subtractStrings(
+            Array.isArray(githubAnalysis.missingRequirements)
+              ? githubAnalysis.missingRequirements
+              : [],
+            Array.isArray(githubAnalysis.matchedRequirements)
+              ? githubAnalysis.matchedRequirements
+              : [],
+            15,
+          ),
+        }
+      : null;
+
+    cv.analysisRaw = {
+      ...raw,
+      matchedRequirements: cleanedTopMatched,
+      missingRequirements: cleanedTopMissing,
+      cvAnalysis: cleanedCvAnalysis,
+      githubAnalysis: cleanedGithubAnalysis,
+    };
+
+    return cv;
   }
 
   async sendEmail(cvId: number, dto: SendEmailDto) {

@@ -22,6 +22,10 @@ export function safeLower(s: unknown): string {
     .trim();
 }
 
+export function normalizedKey(s: unknown): string {
+  return safeLower(String(s ?? '').replace(/\s+/g, ' '));
+}
+
 export function includesAny(text: string, needles: string[]): boolean {
   const t = safeLower(text);
   return needles.some((n) => t.includes(safeLower(n)));
@@ -50,6 +54,30 @@ export function scoreToRecommendation(score: number): Recommendation {
 
 export function mergeUnique(...arrays: string[][]): string[] {
   return uniqueStrings(arrays.flat(), 999);
+}
+
+export function subtractStrings(
+  source: string[],
+  blocked: string[],
+  max = 999,
+): string[] {
+  const blockedKeys = new Set(blocked.map((v) => normalizedKey(v)));
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  for (const item of source) {
+    const value = String(item ?? '').trim();
+    if (!value) continue;
+
+    const key = normalizedKey(value);
+    if (blockedKeys.has(key) || seen.has(key)) continue;
+
+    seen.add(key);
+    out.push(value);
+    if (out.length >= max) break;
+  }
+
+  return out;
 }
 
 export function truncate(s: string, max: number): string {
