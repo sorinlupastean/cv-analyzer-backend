@@ -37,6 +37,38 @@ export type HomeDashboardDto = {
 export class DashboardService {
   constructor(@InjectRepository(Cv) private readonly cvRepo: Repository<Cv>) {}
 
+  private readonly skillDisplayAliases: Record<string, string> = {
+    comunicare: 'Comunicare',
+    communication: 'Comunicare',
+    teamwork: 'Lucru în echipă',
+    'team work': 'Lucru în echipă',
+    colaborare: 'Lucru în echipă',
+    organizare: 'Organizare',
+    organization: 'Organizare',
+    'organizational skills': 'Organizare',
+    'problem solving': 'Rezolvare de probleme',
+    'rezolvare de probleme': 'Rezolvare de probleme',
+    adaptabilitate: 'Adaptabilitate',
+    adaptability: 'Adaptabilitate',
+    leadership: 'Leadership',
+    creativitate: 'Creativitate',
+    creativity: 'Creativitate',
+    figma: 'Figma',
+    css: 'CSS',
+    html: 'HTML',
+    sql: 'SQL',
+    javascript: 'JavaScript',
+    typescript: 'TypeScript',
+    react: 'React',
+    angular: 'Angular',
+    vue: 'Vue',
+    nodejs: 'Node.js',
+    nestjs: 'NestJS',
+    postgres: 'PostgreSQL',
+    postgresql: 'PostgreSQL',
+    mysql: 'MySQL',
+  };
+
   async home(): Promise<HomeDashboardDto> {
     const now = new Date();
 
@@ -200,14 +232,67 @@ export class DashboardService {
       }, 't')
       .groupBy('skill')
       .orderBy('cnt', 'DESC')
-      .limit(10)
       .getRawMany();
 
-    return rows
-      .map((r: any) => ({
-        name: String(r.skill || '').trim(),
-        value: Number(r.cnt ?? 0),
-      }))
-      .filter((x) => x.name.length > 0 && x.value > 0);
+    const aggregates = new Map<string, SkillPoint>();
+
+    for (const row of rows) {
+      const rawName = String(row?.skill ?? '').trim();
+      const count = Number(row?.cnt ?? 0);
+      if (!rawName || !Number.isFinite(count) || count <= 0) continue;
+
+      const normalizedKey = this.normalizeSkillKey(rawName);
+      const displayName = this.resolveSkillDisplayName(rawName);
+      const current = aggregates.get(normalizedKey);
+
+      if (current) {
+        current.value += count;
+        continue;
+      }
+
+      aggregates.set(normalizedKey, {
+        name: displayName,
+        value: count,
+      });
+    }
+
+    return Array.from(aggregates.values())
+      .sort((a, b) => {
+        if (b.value !== a.value) return b.value - a.value;
+        return a.name.localeCompare(b.name, 'ro-RO');
+      })
+      .slice(0, 10);
+  }
+
+  private normalizeSkillKey(value: string): string {
+    return String(value ?? '')
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[_/.-]+/g, ' ')
+      .replace(/\s+/g, ' ');
+  }
+
+  private resolveSkillDisplayName(rawName: string): string {
+    const normalized = this.normalizeSkillKey(rawName);
+    const alias = this.skillDisplayAliases[normalized];
+    if (alias) return alias;
+
+    const compact = rawName.trim();
+    if (!compact) return compact;
+
+    if (compact === compact.toUpperCase() && compact.length <= 8) {
+      return compact;
+    }
+
+    return compact
+      .split(/\s+/)
+      .map((part) => {
+        if (!part) return part;
+        if (/^[A-Z0-9+/#.-]+$/.test(part)) return part;
+        return part.charAt(0).toLocaleUpperCase('ro-RO') + part.slice(1);
+      })
+      .join(' ');
   }
 }
