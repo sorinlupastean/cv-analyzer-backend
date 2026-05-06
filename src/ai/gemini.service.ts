@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { GoogleGenAI } from '@google/genai';
 import { readFile } from 'fs/promises';
+import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
 import {
   CandidateEducation,
@@ -8,6 +9,7 @@ import {
   GeminiJobCvAnalysis,
   Recommendation,
 } from '../analysis/analysis.types';
+import { normalizeUnicodeText } from '../common/text-normalization';
 
 const RETRY_DELAYS_MS = [3000, 6000, 12000];
 
@@ -158,27 +160,44 @@ ${schema}
 
     if (!mt || mt === 'application/pdf') {
       const bytes = await readFile(filePath);
-      const base64 = Buffer.from(bytes).toString('base64');
+      const extractedText = await this.extractPdfText(bytes);
 
-      const res = await this.withRetry(() =>
-        this.client.models.generateContent({
-          model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-          contents: [
-            {
-              role: 'user',
-              parts: [
-                { text: promptBase },
-                {
-                  inlineData: {
-                    mimeType: 'application/pdf',
-                    data: base64,
+      const res =
+        extractedText && extractedText.length >= 50
+          ? await this.withRetry(() =>
+              this.client.models.generateContent({
+                model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+                contents: [
+                  {
+                    role: 'user',
+                    parts: [
+                      {
+                        text: `${promptBase}\n\nCV (text extras din PDF):\n${extractedText}`,
+                      },
+                    ],
                   },
-                },
-              ],
-            },
-          ],
-        }),
-      );
+                ],
+              }),
+            )
+          : await this.withRetry(() =>
+              this.client.models.generateContent({
+                model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+                contents: [
+                  {
+                    role: 'user',
+                    parts: [
+                      { text: promptBase },
+                      {
+                        inlineData: {
+                          mimeType: 'application/pdf',
+                          data: Buffer.from(bytes).toString('base64'),
+                        },
+                      },
+                    ],
+                  },
+                ],
+              }),
+            );
 
       const text = res.text ?? '';
       const jsonStr = this.extractJson(text);
@@ -204,7 +223,7 @@ ${schema}
       let cvText = '';
       try {
         const extracted = await mammoth.extractRawText({ buffer: bytes });
-        cvText = String(extracted?.value || '').trim();
+        cvText = normalizeUnicodeText(extracted?.value || '');
       } catch {
         throw new BadRequestException('Nu pot extrage text din DOCX.');
       }
@@ -249,6 +268,24 @@ ${cvText}
     throw new BadRequestException(
       `Tip fișier nesuportat pentru analiză: ${mimeType}. Folosește PDF sau DOCX.`,
     );
+  }
+
+  private async extractPdfText(bytes: Buffer): Promise<string> {
+    try {
+      const parsed = await pdfParse(bytes);
+      const text = normalizeUnicodeText(parsed?.text || '');
+
+      if (text.length < 50) return '';
+
+      return text.length > 25000 ? text.slice(0, 25000) : text;
+    } catch (error) {
+      this.logger.warn(
+        `PDF text extraction failed, will fallback to inline PDF input: ${String(
+          (error as any)?.message || error,
+        )}`,
+      );
+      return '';
+    }
   }
 
   private sanitizeAnalysis(input: unknown): GeminiJobCvAnalysis {
@@ -325,7 +362,7 @@ ${cvText}
       : [];
 
     return {
-      candidateName: String(obj.candidateName || '').trim(),
+      candidateName: normalizeUnicodeText(obj.candidateName),
       email: normalizeEmail(obj.email),
       phone: normalizePhone(obj.phone),
       githubUrl: normalizeGithubUrl(obj.githubUrl),

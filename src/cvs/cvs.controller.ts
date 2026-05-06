@@ -20,6 +20,7 @@ import type { Response } from 'express';
 
 import { CvsService } from './cvs.service';
 import { SendEmailDto } from './dto/send-email.dto';
+import { normalizeUploadedFilename } from '../common/text-normalization';
 
 function ensureUploadsDir(): string {
   const dir = resolve(process.cwd(), 'uploads', 'cvs');
@@ -78,6 +79,7 @@ export class CvsController {
     }
 
     file.path = resolve(file.path).replace(/\\/g, '/');
+    file.originalname = normalizeUploadedFilename(file.originalname);
 
     return this.cvsService.uploadForJob(jobId, file);
   }

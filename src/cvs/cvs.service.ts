@@ -13,6 +13,10 @@ import { CandidateAnalysisService } from '../analysis/candidate-analysis.service
 import { subtractStrings } from '../analysis/analysis.utils';
 import { MailService } from '../mail/mail.service';
 import { SendEmailDto } from './dto/send-email.dto';
+import {
+  normalizeUnicodeText,
+  normalizeUploadedFilename,
+} from '../common/text-normalization';
 
 @Injectable()
 export class CvsService {
@@ -53,7 +57,7 @@ export class CvsService {
 
     const cv = this.cvRepo.create({
       job,
-      fileName: file.originalname,
+      fileName: normalizeUploadedFilename(file.originalname),
       storedName: file.filename,
       filePath: (file.path || '').replace(/\\/g, '/'),
       fileSize: file.size,
@@ -97,7 +101,7 @@ export class CvsService {
 
     return {
       filePath: cv.filePath,
-      fileName: cv.fileName,
+      fileName: normalizeUploadedFilename(cv.fileName),
       mimeType: cv.mimeType,
     };
   }
@@ -168,7 +172,7 @@ export class CvsService {
       githubUsernameOrUrl: null,
     });
 
-    cv.candidateName = result.candidateName || cv.candidateName || '';
+    cv.candidateName = normalizeUnicodeText(result.candidateName) || cv.candidateName || '';
     cv.matchScore = result.finalScore ?? 0;
     cv.status = 'Analizat';
     cv.skills = result.skills ?? [];
@@ -185,6 +189,9 @@ export class CvsService {
   }
 
   private sanitizeAnalysisOnRead(cv: Cv) {
+    cv.fileName = normalizeUploadedFilename(cv.fileName);
+    cv.candidateName = normalizeUnicodeText(cv.candidateName) || cv.candidateName;
+
     const raw = cv.analysisRaw as any;
     if (!raw || typeof raw !== 'object') return cv;
 
