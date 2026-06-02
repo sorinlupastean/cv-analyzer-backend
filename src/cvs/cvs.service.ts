@@ -128,6 +128,10 @@ export class CvsService {
       throw new BadRequestException('CV-ul nu aparține acestui job');
     }
 
+    if (cv.status === 'Analizat') {
+      return this.sanitizeAnalysisOnRead(cv);
+    }
+
     const job = await this.jobRepo.findOne({ where: { id: jobId } });
     if (!job) {
       throw new NotFoundException('Postul nu a fost găsit');
