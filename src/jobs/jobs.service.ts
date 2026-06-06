@@ -8,6 +8,7 @@ import { Repository } from 'typeorm';
 import { Job } from './entities/job.entity';
 import { CreateJobDto } from './dto/create-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
+import { Cv } from '../cvs/entities/cv.entity';
 
 type JobStatus = 'ACTIVE' | 'CLOSED';
 
@@ -16,10 +17,12 @@ export class JobsService {
   constructor(@InjectRepository(Job) private readonly repo: Repository<Job>) {}
 
   findAll() {
-    return this.repo.find({
+    const jobs = this.repo.find({
       relations: { cvs: true },
       order: { createdAt: 'DESC' },
     });
+
+    return jobs.then((rows) => rows.map((job) => this.withOnlyAnalyzedCvs(job)));
   }
 
   async findOne(id: number) {
@@ -28,7 +31,7 @@ export class JobsService {
       relations: { cvs: true },
     });
     if (!job) throw new NotFoundException('Job not found');
-    return job;
+    return this.withOnlyAnalyzedCvs(job);
   }
 
   create(dto: CreateJobDto) {
@@ -74,5 +77,19 @@ export class JobsService {
     const job = await this.findOne(id);
     await this.repo.remove(job);
     return { ok: true };
+  }
+
+  private withOnlyAnalyzedCvs(job: Job): Job {
+    const cvs = Array.isArray(job.cvs) ? job.cvs : [];
+
+    return {
+      ...job,
+      cvs: cvs.filter((cv) => this.isAnalyzedCv(cv)),
+    };
+  }
+
+  private isAnalyzedCv(cv: Cv): boolean {
+    const status = String(cv?.status ?? '').toLowerCase();
+    return status.includes('analiz') || Boolean(cv?.analysisRaw);
   }
 }
