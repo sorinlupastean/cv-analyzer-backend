@@ -25,6 +25,7 @@ export type GeminiJobCvAnalysis = {
   email: string | null;
   phone: string | null;
   githubUrl: string | null;
+  candidatePhotoDataUrl: string | null;
 
   languages: string[];
   domains: string[];
@@ -111,6 +112,7 @@ export type FinalCandidateAnalysis = {
   candidateName: string;
   email: string | null;
   phone: string | null;
+  candidatePhotoDataUrl: string | null;
 
   cvScore: number;
   githubScore: number | null;

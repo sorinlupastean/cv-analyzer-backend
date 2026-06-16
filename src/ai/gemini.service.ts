@@ -1,6 +1,9 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { execFileSync } from 'child_process';
+import { existsSync } from 'fs';
 import { GoogleGenAI } from '@google/genai';
 import { readFile } from 'fs/promises';
+import path from 'path';
 import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
 import {
@@ -10,6 +13,11 @@ import {
   Recommendation,
 } from '../analysis/analysis.types';
 import { normalizeUnicodeText } from '../common/text-normalization';
+import {
+  buildDataUrl,
+  parseImageDimensions,
+  pdfImageToPngDataUrl,
+} from '../common/image-utils';
 
 const RETRY_DELAYS_MS = [3000, 6000, 12000];
 
@@ -66,6 +74,12 @@ export class GeminiService {
     }
 
     const mt = String(mimeType || '').toLowerCase();
+    const bytes = await readFile(filePath);
+    const candidatePhotoDataUrl = await this.extractCandidatePhotoDataUrl(
+      filePath,
+      bytes,
+      mt,
+    );
 
     const schema = `
 Return ONLY valid JSON matching exactly this shape:
@@ -159,7 +173,6 @@ ${schema}
 `.trim();
 
     if (!mt || mt === 'application/pdf') {
-      const bytes = await readFile(filePath);
       const extractedText = await this.extractPdfText(bytes);
 
       const res =
@@ -209,7 +222,7 @@ ${schema}
         throw new BadRequestException('Gemini a returnat un JSON invalid.');
       }
 
-      return this.sanitizeAnalysis(parsed);
+      return this.sanitizeAnalysis(parsed, candidatePhotoDataUrl);
     }
 
     const isDocx =
@@ -218,8 +231,6 @@ ${schema}
       ) || mt.includes('application/docx');
 
     if (isDocx) {
-      const bytes = await readFile(filePath);
-
       let cvText = '';
       try {
         const extracted = await mammoth.extractRawText({ buffer: bytes });
@@ -262,7 +273,7 @@ ${cvText}
         throw new BadRequestException('Gemini a returnat un JSON invalid.');
       }
 
-      return this.sanitizeAnalysis(parsed);
+      return this.sanitizeAnalysis(parsed, candidatePhotoDataUrl);
     }
 
     throw new BadRequestException(
@@ -288,7 +299,219 @@ ${cvText}
     }
   }
 
-  private sanitizeAnalysis(input: unknown): GeminiJobCvAnalysis {
+  private async extractCandidatePhotoDataUrl(
+    filePath: string,
+    bytes: Buffer,
+    mimeType: string,
+  ): Promise<string | null> {
+    const mt = String(mimeType || '').toLowerCase();
+
+    if (mt === 'application/pdf') {
+      const pdfPhoto = await this.extractPdfCandidatePhotoDataUrlWithPyMuPDF(
+        filePath,
+      );
+      if (pdfPhoto) return pdfPhoto;
+
+      return this.extractPdfCandidatePhotoDataUrl(new Uint8Array(bytes));
+    }
+
+    const isDocx =
+      mt.includes(
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      ) || mt.includes('application/docx');
+
+    if (isDocx) {
+      return this.extractDocxCandidatePhotoDataUrl(bytes);
+    }
+
+    return null;
+  }
+
+  private async extractPdfCandidatePhotoDataUrlWithPyMuPDF(
+    filePath: string,
+  ): Promise<string | null> {
+    const scriptCandidates = [
+      path.resolve(process.cwd(), 'src/common/pdf-photo-extractor.py'),
+      path.resolve(__dirname, '../common/pdf-photo-extractor.py'),
+    ];
+    const scriptPath = scriptCandidates.find((candidate) =>
+      existsSync(candidate),
+    );
+
+    if (!scriptPath) {
+      return null;
+    }
+
+    try {
+      const stdout = execFileSync('python', [scriptPath, filePath], {
+        encoding: 'utf8',
+        maxBuffer: 1024 * 1024,
+        timeout: 30000,
+      }).trim();
+
+      if (!stdout || stdout === 'null') return null;
+      if (!stdout.startsWith('data:image/png;base64,')) return null;
+
+      return stdout;
+    } catch (error) {
+      this.logger.warn(
+        `PyMuPDF photo extraction failed: ${String(
+          (error as any)?.message || error,
+        )}`,
+      );
+      return null;
+    }
+  }
+
+  private async extractDocxCandidatePhotoDataUrl(
+    bytes: Buffer,
+  ): Promise<string | null> {
+    const candidates: Array<{ score: number; src: string }> = [];
+
+    try {
+      await mammoth.convertToHtml(
+        { buffer: bytes },
+        {
+          convertImage: mammoth.images.imgElement(async (image) => {
+            const buffer = Buffer.from(await image.readAsArrayBuffer());
+            const src = buildDataUrl(image.contentType, buffer);
+            const dimensions = parseImageDimensions(buffer);
+
+            if (dimensions) {
+              const area = dimensions.width * dimensions.height;
+              const ratio = dimensions.width / Math.max(dimensions.height, 1);
+
+              if (
+                area >= 4000 &&
+                area <= 600000 &&
+                ratio >= 0.5 &&
+                ratio <= 1.9
+              ) {
+                const squareScore = 1 - Math.min(Math.abs(ratio - 1), 1);
+                const sizeScore = Math.min(area / 60000, 1);
+                candidates.push({
+                  src,
+                  score: sizeScore * 0.7 + squareScore * 0.3,
+                });
+              }
+            } else if (!candidates.length) {
+              candidates.push({ src, score: 0 });
+            }
+
+            return { src };
+          }),
+        },
+      );
+    } catch (error) {
+      this.logger.warn(
+        `DOCX image extraction failed: ${String((error as any)?.message || error)}`,
+      );
+      return null;
+    }
+
+    if (!candidates.length) return null;
+
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates[0]?.src || null;
+  }
+
+  private async extractPdfCandidatePhotoDataUrl(
+    bytes: Uint8Array,
+  ): Promise<string | null> {
+    let pdf: any = null;
+    let page: any = null;
+    const pdfBytes =
+      bytes instanceof Uint8Array && !Buffer.isBuffer(bytes)
+        ? bytes
+        : new Uint8Array(bytes);
+
+    try {
+      const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+      pdf = await pdfjs.getDocument({ data: pdfBytes }).promise;
+      page = await pdf.getPage(1);
+      const ops = await page.getOperatorList();
+
+      const paintImageOps = new Set(
+        ['paintImageXObject', 'paintImageMaskXObject']
+          .map((name) => pdfjs.OPS?.[name])
+          .filter((op) => typeof op === 'number'),
+      );
+
+      const candidates: Array<{
+        objId: string;
+        score: number;
+      }> = [];
+      const seen = new Set<string>();
+
+      for (let i = 0; i < ops.fnArray.length; i++) {
+        if (!paintImageOps.has(ops.fnArray[i])) continue;
+
+        const args = ops.argsArray[i];
+        const objId = Array.isArray(args) ? String(args[0] || '').trim() : '';
+        const width = Array.isArray(args) ? Number(args[1]) : NaN;
+        const height = Array.isArray(args) ? Number(args[2]) : NaN;
+
+        if (!objId || seen.has(objId)) continue;
+        seen.add(objId);
+
+        if (!Number.isFinite(width) || !Number.isFinite(height)) continue;
+
+        const safeWidth = Math.max(1, Math.round(width));
+        const safeHeight = Math.max(1, Math.round(height));
+        const area = safeWidth * safeHeight;
+        const ratio = safeWidth / safeHeight;
+
+        if (
+          area < 4000 ||
+          area > 600000 ||
+          ratio < 0.5 ||
+          ratio > 1.9
+        ) {
+          continue;
+        }
+
+        const squareScore = 1 - Math.min(Math.abs(ratio - 1), 1);
+        const sizeScore = Math.min(area / 60000, 1);
+        candidates.push({
+          objId,
+          score: sizeScore * 0.7 + squareScore * 0.3,
+        });
+      }
+
+      candidates.sort((a, b) => b.score - a.score);
+
+      for (const candidate of candidates.slice(0, 6)) {
+        const image = await new Promise<any>((resolve) =>
+          page.objs.get(candidate.objId, resolve),
+        );
+        const dataUrl = pdfImageToPngDataUrl(image);
+        if (dataUrl) return dataUrl;
+      }
+    } catch (error) {
+      this.logger.warn(
+        `PDF photo extraction failed: ${String((error as any)?.message || error)}`,
+      );
+    } finally {
+      try {
+        page?.cleanup?.();
+      } catch {
+        // ignore cleanup issues
+      }
+
+      try {
+        await pdf?.destroy?.();
+      } catch {
+        // ignore cleanup issues
+      }
+    }
+
+    return null;
+  }
+
+  private sanitizeAnalysis(
+    input: unknown,
+    candidatePhotoDataUrl: string | null,
+  ): GeminiJobCvAnalysis {
     const obj = (input && typeof input === 'object' ? input : {}) as any;
 
     const toArrayStrings = (v: unknown, max: number) => {
@@ -366,6 +589,7 @@ ${cvText}
       email: normalizeEmail(obj.email),
       phone: normalizePhone(obj.phone),
       githubUrl: normalizeGithubUrl(obj.githubUrl),
+      candidatePhotoDataUrl: candidatePhotoDataUrl || null,
 
       languages: toArrayStrings(obj.languages, 10),
       domains: toArrayStrings(obj.domains, 10),

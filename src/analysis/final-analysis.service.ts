@@ -156,6 +156,7 @@ export class FinalAnalysisService {
       candidateName: cvAnalysis.candidateName,
       email: cvAnalysis.email,
       phone: cvAnalysis.phone,
+      candidatePhotoDataUrl: cvAnalysis.candidatePhotoDataUrl ?? null,
 
       cvScore,
       githubScore,
