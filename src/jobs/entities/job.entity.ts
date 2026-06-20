@@ -35,6 +35,21 @@ export class Job {
   @Column({ type: 'varchar', length: 10, default: 'ACTIVE' })
   status!: JobStatus;
 
+  @Column({ type: 'jsonb', nullable: true })
+  copilotMemory!: {
+    mode?: 'ai' | 'local';
+    lastTopCandidateIds?: number[];
+    lastTopCandidateNames?: string[];
+    lastGeneratedAt?: string;
+    notes?: string[];
+  } | null;
+
+  @Column({ type: 'timestamp with time zone', nullable: true })
+  copilotLastRunAt!: Date | null;
+
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  copilotMode!: 'ai' | 'local' | null;
+
   @CreateDateColumn()
   createdAt!: Date;
 

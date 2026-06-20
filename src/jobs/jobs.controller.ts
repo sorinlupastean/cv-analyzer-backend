@@ -31,6 +31,11 @@ export class JobsController {
     return this.jobsService.findOne(Number(id));
   }
 
+  @Get(':id/recruiter-copilot')
+  getRecruiterCopilot(@Param('id') id: string) {
+    return this.jobsService.getRecruiterCopilotReport(Number(id));
+  }
+
   @Post()
   create(@Body() dto: CreateJobDto) {
     return this.jobsService.create(dto);

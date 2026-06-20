@@ -31,6 +31,24 @@ export class GeminiService {
     this.client = new GoogleGenAI({ apiKey });
   }
 
+  async generateJson<T = unknown>(prompt: string): Promise<T> {
+    const res = await this.withRetry(() =>
+      this.client.models.generateContent({
+        model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      }),
+    );
+
+    const text = res.text ?? '';
+    const jsonStr = this.extractJson(text);
+
+    try {
+      return JSON.parse(jsonStr) as T;
+    } catch {
+      throw new BadRequestException('Gemini a returnat un JSON invalid.');
+    }
+  }
+
   private async withRetry<T>(fn: () => Promise<T>): Promise<T> {
     let lastError: unknown;
 
@@ -69,10 +87,6 @@ export class GeminiService {
     mimeType: string,
     jobText: string,
   ): Promise<GeminiJobCvAnalysis> {
-    if (!process.env.GEMINI_API_KEY) {
-      throw new BadRequestException('Lipsește GEMINI_API_KEY în .env');
-    }
-
     const mt = String(mimeType || '').toLowerCase();
     const bytes = await readFile(filePath);
     const candidatePhotoDataUrl = await this.extractCandidatePhotoDataUrl(
@@ -80,6 +94,13 @@ export class GeminiService {
       bytes,
       mt,
     );
+
+    if (!process.env.GEMINI_API_KEY) {
+      this.logger.warn(
+        'GEMINI_API_KEY lipsește, folosesc analiza locală pentru CV.',
+      );
+      return this.buildLocalAnalysis(bytes, mt, jobText, candidatePhotoDataUrl);
+    }
 
     const schema = `
 Return ONLY valid JSON matching exactly this shape:
@@ -172,113 +193,120 @@ ${jobText}
 ${schema}
 `.trim();
 
-    if (!mt || mt === 'application/pdf') {
-      const extractedText = await this.extractPdfText(bytes);
+    try {
+      if (!mt || mt === 'application/pdf') {
+        const extractedText = await this.extractPdfText(bytes);
 
-      const res =
-        extractedText && extractedText.length >= 50
-          ? await this.withRetry(() =>
-              this.client.models.generateContent({
-                model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-                contents: [
-                  {
-                    role: 'user',
-                    parts: [
-                      {
-                        text: `${promptBase}\n\nCV (text extras din PDF):\n${extractedText}`,
-                      },
-                    ],
-                  },
-                ],
-              }),
-            )
-          : await this.withRetry(() =>
-              this.client.models.generateContent({
-                model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-                contents: [
-                  {
-                    role: 'user',
-                    parts: [
-                      { text: promptBase },
-                      {
-                        inlineData: {
-                          mimeType: 'application/pdf',
-                          data: Buffer.from(bytes).toString('base64'),
+        const res =
+          extractedText && extractedText.length >= 50
+            ? await this.withRetry(() =>
+                this.client.models.generateContent({
+                  model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+                  contents: [
+                    {
+                      role: 'user',
+                      parts: [
+                        {
+                          text: `${promptBase}\n\nCV (text extras din PDF):\n${extractedText}`,
                         },
-                      },
-                    ],
-                  },
-                ],
-              }),
-            );
+                      ],
+                    },
+                  ],
+                }),
+              )
+            : await this.withRetry(() =>
+                this.client.models.generateContent({
+                  model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+                  contents: [
+                    {
+                      role: 'user',
+                      parts: [
+                        { text: promptBase },
+                        {
+                          inlineData: {
+                            mimeType: 'application/pdf',
+                            data: Buffer.from(bytes).toString('base64'),
+                          },
+                        },
+                      ],
+                    },
+                  ],
+                }),
+              );
 
-      const text = res.text ?? '';
-      const jsonStr = this.extractJson(text);
+        const text = res.text ?? '';
+        const jsonStr = this.extractJson(text);
 
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(jsonStr);
-      } catch {
-        throw new BadRequestException('Gemini a returnat un JSON invalid.');
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(jsonStr);
+        } catch {
+          throw new BadRequestException('Gemini a returnat un JSON invalid.');
+        }
+
+        return this.sanitizeAnalysis(parsed, candidatePhotoDataUrl);
       }
 
-      return this.sanitizeAnalysis(parsed, candidatePhotoDataUrl);
-    }
+      const isDocx =
+        mt.includes(
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        ) || mt.includes('application/docx');
 
-    const isDocx =
-      mt.includes(
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      ) || mt.includes('application/docx');
+      if (isDocx) {
+        let cvText = '';
+        try {
+          const extracted = await mammoth.extractRawText({ buffer: bytes });
+          cvText = normalizeUnicodeText(extracted?.value || '');
+        } catch {
+          throw new BadRequestException('Nu pot extrage text din DOCX.');
+        }
 
-    if (isDocx) {
-      let cvText = '';
-      try {
-        const extracted = await mammoth.extractRawText({ buffer: bytes });
-        cvText = normalizeUnicodeText(extracted?.value || '');
-      } catch {
-        throw new BadRequestException('Nu pot extrage text din DOCX.');
-      }
+        if (!cvText || cvText.length < 50) {
+          throw new BadRequestException(
+            'DOCX pare gol sau textul extras este prea scurt pentru analiză.',
+          );
+        }
 
-      if (!cvText || cvText.length < 50) {
-        throw new BadRequestException(
-          'DOCX pare gol sau textul extras este prea scurt pentru analiză.',
-        );
-      }
+        if (cvText.length > 25000) {
+          cvText = cvText.slice(0, 25000);
+        }
 
-      if (cvText.length > 25000) {
-        cvText = cvText.slice(0, 25000);
-      }
-
-      const promptDocx = `
+        const promptDocx = `
 ${promptBase}
 
 CV (text extras din DOCX):
 ${cvText}
 `.trim();
 
-      const res = await this.withRetry(() =>
-        this.client.models.generateContent({
-          model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-          contents: [{ role: 'user', parts: [{ text: promptDocx }] }],
-        }),
-      );
+        const res = await this.withRetry(() =>
+          this.client.models.generateContent({
+            model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+            contents: [{ role: 'user', parts: [{ text: promptDocx }] }],
+          }),
+        );
 
-      const text = res.text ?? '';
-      const jsonStr = this.extractJson(text);
+        const text = res.text ?? '';
+        const jsonStr = this.extractJson(text);
 
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(jsonStr);
-      } catch {
-        throw new BadRequestException('Gemini a returnat un JSON invalid.');
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(jsonStr);
+        } catch {
+          throw new BadRequestException('Gemini a returnat un JSON invalid.');
+        }
+
+        return this.sanitizeAnalysis(parsed, candidatePhotoDataUrl);
       }
-
-      return this.sanitizeAnalysis(parsed, candidatePhotoDataUrl);
+    } catch (error) {
+      this.logger.warn(
+        `Gemini analysis failed, falling back to local analysis: ${String(
+          (error as any)?.message || error,
+        )}`,
+      );
+      return this.buildLocalAnalysis(bytes, mt, jobText, candidatePhotoDataUrl);
     }
 
-    throw new BadRequestException(
-      `Tip fișier nesuportat pentru analiză: ${mimeType}. Folosește PDF sau DOCX.`,
-    );
+    return this.buildLocalAnalysis(bytes, mt, jobText, candidatePhotoDataUrl);
   }
 
   private async extractPdfText(bytes: Buffer): Promise<string> {
@@ -427,7 +455,15 @@ ${cvText}
 
     try {
       const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
-      pdf = await pdfjs.getDocument({ data: pdfBytes }).promise;
+      pdf = await pdfjs
+        .getDocument({
+          data: pdfBytes,
+          standardFontDataUrl: path.resolve(
+            process.cwd(),
+            'node_modules/pdfjs-dist/standard_fonts/',
+          ),
+        })
+        .promise;
       page = await pdf.getPage(1);
       const ops = await page.getOperatorList();
 
@@ -613,6 +649,312 @@ ${cvText}
         .slice(0, 700),
       evidence: toArrayStrings(obj.evidence, 10).map((x) => x.slice(0, 120)),
     };
+  }
+
+  private async buildLocalAnalysis(
+    bytes: Buffer,
+    mimeType: string,
+    jobText: string,
+    candidatePhotoDataUrl: string | null,
+  ): Promise<GeminiJobCvAnalysis> {
+    const cvText = await this.extractPlainText(bytes, mimeType);
+    const normalizedCvText = normalizeUnicodeText(cvText).replace(/\s+/g, ' ').trim();
+    const normalizedJobText = normalizeUnicodeText(jobText).replace(/\s+/g, ' ').trim();
+
+    const skillCatalog = [
+      'TypeScript',
+      'JavaScript',
+      'React',
+      'Node.js',
+      'NestJS',
+      'Express',
+      'Angular',
+      'Vue',
+      'Next.js',
+      'HTML',
+      'CSS',
+      'SQL',
+      'PostgreSQL',
+      'MongoDB',
+      'Prisma',
+      'Docker',
+      'Git',
+      'GitHub',
+      'REST API',
+      'JWT',
+      'Testing',
+    ];
+
+    const detectedSkills = skillCatalog.filter((skill) =>
+      this.includesText(normalizedCvText, skill),
+    );
+
+    const jobRequirements = this.extractRequirementSegments(normalizedJobText);
+    const matchedRequirements = jobRequirements.filter((req) =>
+      this.includesText(normalizedCvText, req),
+    );
+    const missingRequirements = jobRequirements.filter(
+      (req) => !this.includesText(normalizedCvText, req),
+    );
+
+    const redFlags: string[] = [];
+    if (normalizedCvText.length < 350) {
+      redFlags.push('CV-ul are prea puțin text extras pentru o analiză sigură.');
+    }
+    if (!detectedSkills.length) {
+      redFlags.push('Nu au fost identificate competențe tehnice clare în CV.');
+    }
+    if (!this.extractGithubUrl(normalizedCvText)) {
+      redFlags.push('Nu a fost găsit un profil GitHub sau o trimitere clară către GitHub.');
+    }
+
+    const evidence = this.buildEvidenceSnippets(normalizedCvText, [
+      ...detectedSkills.slice(0, 4),
+      ...matchedRequirements.slice(0, 2),
+    ]);
+
+    const candidateName =
+      this.extractCandidateName(normalizedCvText) ||
+      'Candidat identificat local';
+
+    const score = this.computeLocalScore({
+      skillsCount: detectedSkills.length,
+      matchedCount: matchedRequirements.length,
+      missingCount: missingRequirements.length,
+      redFlagsCount: redFlags.length,
+      textLength: normalizedCvText.length,
+      hasGithub: Boolean(this.extractGithubUrl(normalizedCvText)),
+    });
+
+    const recommendation: Recommendation =
+      score >= 75 ? 'INVITA' : score >= 45 ? 'REVIZUIRE' : 'RESPINGE';
+
+    const reasoningShort = [
+      `- Score local: ${score}`,
+      detectedSkills.length
+        ? `- Skills: ${detectedSkills.slice(0, 6).join(', ')}`
+        : '- Skills: nu au fost identificate clar',
+      matchedRequirements.length
+        ? `- Potriviri: ${matchedRequirements.slice(0, 5).join(', ')}`
+        : '- Potriviri: puține potriviri clare',
+      missingRequirements.length
+        ? `- Lipsuri: ${missingRequirements.slice(0, 5).join(', ')}`
+        : '- Lipsuri: nu sunt evidente',
+    ].join('\n');
+
+    const summary = [
+      `Analiză locală pentru ${candidateName}.`,
+      detectedSkills.length
+        ? `Competențe detectate: ${detectedSkills.slice(0, 6).join(', ')}.`
+        : 'Competențele tehnice nu sunt foarte clare din textul extras.',
+      matchedRequirements.length
+        ? `Cerinte potrivite: ${matchedRequirements.slice(0, 4).join(', ')}.`
+        : 'Sunt necesare clarificări pe cerințele jobului.',
+    ].join(' ');
+
+    return this.sanitizeAnalysis(
+      {
+        candidateName,
+        email: null,
+        phone: null,
+        githubUrl: this.extractGithubUrl(normalizedCvText),
+        languages: this.extractLanguages(normalizedCvText),
+        domains: this.extractDomains(normalizedCvText),
+        skills: detectedSkills,
+        experience: this.extractExperience(normalizedCvText),
+        education: this.extractEducation(normalizedCvText),
+        matchedRequirements,
+        missingRequirements,
+        redFlags,
+        summary,
+        matchScore: score,
+        recommendation,
+        reasoningShort,
+        evidence,
+      },
+      candidatePhotoDataUrl,
+    );
+  }
+
+  private async extractPlainText(
+    bytes: Buffer,
+    mimeType: string,
+  ): Promise<string> {
+    const mt = String(mimeType || '').toLowerCase();
+
+    if (mt === 'application/pdf') {
+      try {
+        const parsed = await pdfParse(bytes);
+        return normalizeUnicodeText(parsed?.text || '');
+      } catch {
+        return '';
+      }
+    }
+
+    const isDocx =
+      mt.includes(
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      ) || mt.includes('application/docx');
+
+    if (isDocx) {
+      try {
+        const extracted = await mammoth.extractRawText({ buffer: bytes });
+        return normalizeUnicodeText(extracted?.value || '');
+      } catch {
+        return '';
+      }
+    }
+
+    return normalizeUnicodeText(bytes.toString('utf8'));
+  }
+
+  private extractRequirementSegments(jobText: string): string[] {
+    const lines = normalizeUnicodeText(jobText)
+      .split(/\r?\n/)
+      .map((line) => line.replace(/^\s*[-*•]\s*/, '').trim())
+      .filter(Boolean);
+
+    const cleaned = lines
+      .filter((line) => line.length >= 4)
+      .filter(
+        (line) =>
+          !/^(titlu|categorie|locație|locatie|tip|descriere|cerințe|cerinte):/i.test(line),
+      );
+
+    const segments = cleaned.length ? cleaned : [normalizeUnicodeText(jobText)];
+
+    return segments
+      .flatMap((segment) =>
+        segment
+          .split(/[,;/]| și /i)
+          .map((part) => part.trim())
+          .filter((part) => part.length >= 4),
+      )
+      .slice(0, 12);
+  }
+
+  private includesText(text: string, term: string): boolean {
+    const t = normalizeUnicodeText(text).toLowerCase();
+    const n = normalizeUnicodeText(term).toLowerCase();
+    if (!t || !n) return false;
+    const normalizedTerm = n.replace(/\./g, '').trim();
+    return (
+      t.includes(n) ||
+      (normalizedTerm !== n && t.includes(normalizedTerm)) ||
+      t.includes(normalizedTerm.replace(/\s+/g, ' '))
+    );
+  }
+
+  private extractGithubUrl(text: string): string | null {
+    const match = text.match(/https?:\/\/(?:www\.)?github\.com\/[A-Za-z0-9_.-]+/i);
+    return match?.[0] ?? null;
+  }
+
+  private extractCandidateName(text: string): string {
+    const lines = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .slice(0, 12);
+
+    for (const line of lines) {
+      const cleanLine = line
+        .replace(/[|·•]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (cleanLine.length < 4 || cleanLine.length > 42) continue;
+      if (/@/.test(cleanLine) || /\d{2,}/.test(cleanLine)) continue;
+      if (this.includesText(cleanLine, 'curriculum vitae')) continue;
+      if (this.includesText(cleanLine, 'resume')) continue;
+      if (this.includesText(cleanLine, 'email')) continue;
+      if (this.includesText(cleanLine, 'telefon')) continue;
+      if (/^(experience|experiență|educație|education|skills|competences)/i.test(cleanLine)) continue;
+      return cleanLine;
+    }
+
+    return '';
+  }
+
+  private extractLanguages(text: string): string[] {
+    const catalog = ['Romanian', 'English', 'German', 'French', 'Italian', 'Spanish'];
+    return catalog.filter((lang) => this.includesText(text, lang)).slice(0, 6);
+  }
+
+  private extractDomains(text: string): string[] {
+    const catalog = ['Frontend', 'Backend', 'Full Stack', 'Mobile', 'DevOps', 'Data'];
+    return catalog.filter((item) => this.includesText(text, item)).slice(0, 6);
+  }
+
+  private extractExperience(text: string) {
+    const lines = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .slice(0, 10);
+
+    const likely = lines.filter((line) =>
+      /(developer|engineer|intern|manager|specialist|consultant|lead|senior|junior)/i.test(line),
+    );
+
+    return likely.slice(0, 5).map((line) => ({
+      title: line.slice(0, 80),
+      company: undefined,
+      startDate: undefined,
+      endDate: undefined,
+      location: undefined,
+      responsibilities: [],
+      technologies: [],
+    }));
+  }
+
+  private extractEducation(text: string) {
+    const lines = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .slice(0, 10);
+
+    const likely = lines.filter((line) => /(university|universitate|facult|college|school|liceu|academy)/i.test(line));
+
+    return likely.slice(0, 4).map((line) => ({
+      school: line.slice(0, 80),
+      degree: undefined,
+      field: undefined,
+      startDate: undefined,
+      endDate: undefined,
+    }));
+  }
+
+  private buildEvidenceSnippets(text: string, terms: string[]): string[] {
+    const snippets: string[] = [];
+    const lowerText = text.toLowerCase();
+    for (const term of terms) {
+      const idx = lowerText.indexOf(term.toLowerCase());
+      if (idx === -1) continue;
+      const start = Math.max(0, idx - 35);
+      const end = Math.min(text.length, idx + term.length + 45);
+      snippets.push(text.slice(start, end).trim());
+      if (snippets.length >= 4) break;
+    }
+    return snippets;
+  }
+
+  private computeLocalScore(input: {
+    skillsCount: number;
+    matchedCount: number;
+    missingCount: number;
+    redFlagsCount: number;
+    textLength: number;
+    hasGithub: boolean;
+  }): number {
+    const base = 20;
+    const skillsScore = Math.min(input.skillsCount * 7, 35);
+    const matchScore = Math.min(input.matchedCount * 5, 30);
+    const textScore = input.textLength >= 1200 ? 10 : input.textLength >= 600 ? 6 : 0;
+    const githubScore = input.hasGithub ? 5 : 0;
+    const penalty = Math.min(input.redFlagsCount * 4, 25) + Math.min(input.missingCount * 2, 10);
+
+    return Math.max(0, Math.min(100, base + skillsScore + matchScore + textScore + githubScore - penalty));
   }
 
   private extractJson(s: string) {
