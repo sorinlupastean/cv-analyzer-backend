@@ -7,6 +7,7 @@ import {
   CreateDateColumn,
 } from 'typeorm';
 import { Job } from '../../jobs/entities/job.entity';
+import { User } from '../../users/entities/user.entity';
 
 @Entity()
 export class Cv {
@@ -67,4 +68,11 @@ export class Cv {
   @Index()
   @ManyToOne(() => Job, (job) => job.cvs, { onDelete: 'CASCADE' })
   job!: Job;
+
+  @Index()
+  @ManyToOne(() => User, {
+    nullable: true,
+    onDelete: 'CASCADE',
+  })
+  owner!: User | null;
 }

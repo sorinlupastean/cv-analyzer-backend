@@ -6,11 +6,14 @@ import {
   Param,
   Patch,
   Post,
+  Req,
+  UseGuards,
 } from '@nestjs/common';
 import { JobsService } from './jobs.service';
 import { CreateJobDto } from './dto/create-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
 import { IsIn } from 'class-validator';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 class SetJobStatusDto {
   @IsIn(['ACTIVE', 'CLOSED'])
@@ -18,41 +21,46 @@ class SetJobStatusDto {
 }
 
 @Controller('jobs')
+@UseGuards(JwtAuthGuard)
 export class JobsController {
   constructor(private readonly jobsService: JobsService) {}
 
   @Get()
-  findAll() {
-    return this.jobsService.findAll();
+  findAll(@Req() req: any) {
+    return this.jobsService.findAll(req.user.id);
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.jobsService.findOne(Number(id));
+  findOne(@Req() req: any, @Param('id') id: string) {
+    return this.jobsService.findOne(Number(id), req.user.id);
   }
 
   @Get(':id/recruiter-copilot')
-  getRecruiterCopilot(@Param('id') id: string) {
-    return this.jobsService.getRecruiterCopilotReport(Number(id));
+  getRecruiterCopilot(@Req() req: any, @Param('id') id: string) {
+    return this.jobsService.getRecruiterCopilotReport(Number(id), req.user.id);
   }
 
   @Post()
-  create(@Body() dto: CreateJobDto) {
-    return this.jobsService.create(dto);
+  create(@Req() req: any, @Body() dto: CreateJobDto) {
+    return this.jobsService.create(req.user.id, dto);
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateJobDto) {
-    return this.jobsService.update(Number(id), dto);
+  update(@Req() req: any, @Param('id') id: string, @Body() dto: UpdateJobDto) {
+    return this.jobsService.update(Number(id), req.user.id, dto);
   }
 
   @Patch(':id/status')
-  setStatus(@Param('id') id: string, @Body() dto: SetJobStatusDto) {
-    return this.jobsService.setStatus(Number(id), dto.status);
+  setStatus(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() dto: SetJobStatusDto,
+  ) {
+    return this.jobsService.setStatus(Number(id), req.user.id, dto.status);
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.jobsService.remove(Number(id));
+  remove(@Req() req: any, @Param('id') id: string) {
+    return this.jobsService.remove(Number(id), req.user.id);
   }
 }

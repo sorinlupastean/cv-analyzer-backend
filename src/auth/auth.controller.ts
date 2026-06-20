@@ -11,6 +11,7 @@ import { AuthService } from './auth.service';
 import { AuthGuard } from '@nestjs/passport';
 import type { Response } from 'express';
 import { JwtAuthGuard } from './jwt-auth.guard';
+import { UnauthorizedException } from '@nestjs/common';
 
 @Controller('auth')
 export class AuthController {
@@ -33,11 +34,22 @@ export class AuthController {
   @Get('google/redirect')
   @UseGuards(AuthGuard('google'))
   async googleAuthRedirect(@Req() req, @Res() res: Response) {
-    const jwt = await this.authService.validateOAuthLogin(req.user);
+    try {
+      const jwt = await this.authService.validateOAuthLogin(req.user);
 
-    return res.redirect(
-      `${process.env.FRONTEND_URL}/oauth-success?token=${jwt}`,
-    );
+      return res.redirect(
+        `${process.env.FRONTEND_URL}/oauth-success?token=${encodeURIComponent(jwt)}`,
+      );
+    } catch (error) {
+      const message =
+        error instanceof UnauthorizedException
+          ? error.message
+          : 'Autentificarea Google a eșuat';
+
+      return res.redirect(
+        `${process.env.FRONTEND_URL}/oauth-success?error=${encodeURIComponent(message)}`,
+      );
+    }
   }
 
   @Get('me')

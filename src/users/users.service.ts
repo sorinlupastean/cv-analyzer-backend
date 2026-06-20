@@ -6,6 +6,8 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from './entities/user.entity';
+import { DeletedAccount } from './entities/deleted-account.entity';
+import { Cv } from '../cvs/entities/cv.entity';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import * as bcrypt from 'bcrypt';
 import * as fs from 'fs';
@@ -16,6 +18,10 @@ export class UsersService {
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    @InjectRepository(DeletedAccount)
+    private readonly deletedAccountRepository: Repository<DeletedAccount>,
+    @InjectRepository(Cv)
+    private readonly cvRepository: Repository<Cv>,
   ) {}
 
   findByEmail(email: string) {
@@ -29,6 +35,32 @@ export class UsersService {
   create(user: Partial<User>) {
     const newUser = this.userRepository.create(user);
     return this.userRepository.save(newUser);
+  }
+
+  async isEmailDeleted(email: string) {
+    const normalized = email?.trim().toLowerCase();
+    if (!normalized) return false;
+
+    const deleted = await this.deletedAccountRepository.findOne({
+      where: { email: normalized },
+    });
+
+    return Boolean(deleted);
+  }
+
+  async markEmailDeleted(email: string) {
+    const normalized = email?.trim().toLowerCase();
+    if (!normalized) return;
+
+    const existing = await this.deletedAccountRepository.findOne({
+      where: { email: normalized },
+    });
+
+    if (existing) return;
+
+    await this.deletedAccountRepository.save(
+      this.deletedAccountRepository.create({ email: normalized }),
+    );
   }
 
   async updateProfile(userId: number, dto: UpdateProfileDto) {
@@ -90,6 +122,29 @@ export class UsersService {
     return this.userRepository.save(user);
   }
 
+  async deleteAccount(userId: number) {
+    const user = await this.findById(userId);
+    if (!user) throw new NotFoundException('User not found');
+
+    const ownedCvs = await this.cvRepository.find({
+      where: { owner: { id: userId } },
+    });
+    for (const cv of ownedCvs) {
+      this.removeFileIfExists(cv.filePath);
+    }
+
+    if (user.avatarUrl) {
+      this.removeFileIfExists(
+        path.join(process.cwd(), user.avatarUrl.replace(/^\/+/, '')),
+      );
+    }
+
+    await this.markEmailDeleted(user.email);
+    await this.userRepository.remove(user);
+
+    return { ok: true as const };
+  }
+
   toSafeUser(u: User) {
     const { password, ...rest } = u as any;
     return rest;
@@ -117,5 +172,19 @@ export class UsersService {
     await this.userRepository.save(user);
 
     return { message: 'Password updated successfully' };
+  }
+
+  private removeFileIfExists(filePath?: string | null) {
+    if (!filePath) return;
+
+    const resolved = path.isAbsolute(filePath)
+      ? filePath
+      : path.join(process.cwd(), filePath.replace(/^\/+/, ''));
+
+    if (fs.existsSync(resolved)) {
+      try {
+        fs.unlinkSync(resolved);
+      } catch {}
+    }
   }
 }

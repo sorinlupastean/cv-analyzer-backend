@@ -9,6 +9,7 @@ import { Job } from './entities/job.entity';
 import { CreateJobDto } from './dto/create-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
 import { Cv } from '../cvs/entities/cv.entity';
+import { User } from '../users/entities/user.entity';
 import {
   RecruiterCopilotCandidate,
   RecruiterCopilotDecision,
@@ -26,8 +27,9 @@ export class JobsService {
     private readonly recruiterCopilotAgentService: RecruiterCopilotAgentService,
   ) {}
 
-  findAll() {
+  findAll(userId: number) {
     const jobs = this.repo.find({
+      where: { owner: { id: userId } },
       relations: { cvs: true },
       order: { createdAt: 'DESC' },
     });
@@ -35,29 +37,30 @@ export class JobsService {
     return jobs.then((rows) => rows.map((job) => this.withOnlyAnalyzedCvs(job)));
   }
 
-  async findOne(id: number) {
+  async findOne(id: number, userId: number) {
     const job = await this.repo.findOne({
-      where: { id },
+      where: { id, owner: { id: userId } },
       relations: { cvs: true },
     });
     if (!job) throw new NotFoundException('Job not found');
     return this.withOnlyAnalyzedCvs(job);
   }
 
-  create(dto: CreateJobDto) {
+  create(userId: number, dto: CreateJobDto) {
     const job = this.repo.create({
       ...dto,
       location: dto.location ?? '',
       requirements: dto.requirements ?? '',
       status: (dto.status ?? 'ACTIVE') as JobStatus,
       cvs: [],
+      owner: { id: userId } as User,
     });
 
     return this.repo.save(job);
   }
 
-  async update(id: number, dto: UpdateJobDto) {
-    const job = await this.findOne(id);
+  async update(id: number, userId: number, dto: UpdateJobDto) {
+    const job = await this.findOne(id, userId);
 
     if (job.status === 'CLOSED') {
       throw new BadRequestException(
@@ -77,22 +80,25 @@ export class JobsService {
     return this.repo.save(job);
   }
 
-  async setStatus(id: number, status: JobStatus) {
-    const job = await this.findOne(id);
+  async setStatus(id: number, userId: number, status: JobStatus) {
+    const job = await this.findOne(id, userId);
     job.status = status;
     return this.repo.save(job);
   }
 
-  async remove(id: number) {
-    const job = await this.findOne(id);
+  async remove(id: number, userId: number) {
+    const job = await this.findOne(id, userId);
     await this.repo.remove(job);
     return { ok: true };
   }
   
 
-  async getRecruiterCopilotReport(id: number): Promise<RecruiterCopilotReport> {
+  async getRecruiterCopilotReport(
+    id: number,
+    userId: number,
+  ): Promise<RecruiterCopilotReport> {
     const job = await this.repo.findOne({
-      where: { id },
+      where: { id, owner: { id: userId } },
       relations: { cvs: true },
     });
 

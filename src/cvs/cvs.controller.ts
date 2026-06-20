@@ -8,8 +8,10 @@ import {
   ParseIntPipe,
   Post,
   Query,
+  Req,
   Res,
   UploadedFile,
+  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -21,6 +23,7 @@ import type { Response } from 'express';
 import { CvsService } from './cvs.service';
 import { SendEmailDto } from './dto/send-email.dto';
 import { normalizeUploadedFilename } from '../common/text-normalization';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 function ensureUploadsDir(): string {
   const dir = resolve(process.cwd(), 'uploads', 'cvs');
@@ -29,12 +32,13 @@ function ensureUploadsDir(): string {
 }
 
 @Controller()
+@UseGuards(JwtAuthGuard)
 export class CvsController {
   constructor(private readonly cvsService: CvsService) {}
 
   @Get('jobs/:jobId/cvs')
-  listForJob(@Param('jobId', ParseIntPipe) jobId: number) {
-    return this.cvsService.listForJob(jobId);
+  listForJob(@Req() req: any, @Param('jobId', ParseIntPipe) jobId: number) {
+    return this.cvsService.listForJob(jobId, req.user.id);
   }
 
   @Post('jobs/:jobId/cvs/upload')
@@ -71,6 +75,7 @@ export class CvsController {
     }),
   )
   uploadCv(
+    @Req() req: any,
     @Param('jobId', ParseIntPipe) jobId: number,
     @UploadedFile() file: Express.Multer.File,
   ) {
@@ -81,25 +86,26 @@ export class CvsController {
     file.path = resolve(file.path).replace(/\\/g, '/');
     file.originalname = normalizeUploadedFilename(file.originalname);
 
-    return this.cvsService.uploadForJob(jobId, file);
+    return this.cvsService.uploadForJob(jobId, req.user.id, file);
   }
 
   @Get('cvs/:cvId')
-  findOne(@Param('cvId', ParseIntPipe) cvId: number) {
-    return this.cvsService.findOne(cvId);
+  findOne(@Req() req: any, @Param('cvId', ParseIntPipe) cvId: number) {
+    return this.cvsService.findOne(cvId, req.user.id);
   }
 
   @Post('jobs/:jobId/cvs/:cvId/analyze')
   analyzeForJob(
+    @Req() req: any,
     @Param('jobId', ParseIntPipe) jobId: number,
     @Param('cvId', ParseIntPipe) cvId: number,
   ) {
-    return this.cvsService.analyzeCv(jobId, cvId);
+    return this.cvsService.analyzeCv(jobId, cvId, req.user.id);
   }
 
   @Post('cvs/:cvId/analyze')
-  async analyzeLegacy(@Param('cvId', ParseIntPipe) cvId: number) {
-    const cv = await this.cvsService.findOne(cvId);
+  async analyzeLegacy(@Req() req: any, @Param('cvId', ParseIntPipe) cvId: number) {
+    const cv = await this.cvsService.findOne(cvId, req.user.id);
     const jobId = cv?.job?.id;
 
     if (!jobId) {
@@ -108,16 +114,17 @@ export class CvsController {
       );
     }
 
-    return this.cvsService.analyzeCv(jobId, cvId);
+    return this.cvsService.analyzeCv(jobId, cvId, req.user.id);
   }
 
   @Get('cvs/:cvId/download')
   async download(
+    @Req() req: any,
     @Param('cvId', ParseIntPipe) cvId: number,
     @Res() res: Response,
   ) {
     const { filePath, fileName, mimeType } =
-      await this.cvsService.getFileInfo(cvId);
+      await this.cvsService.getFileInfo(cvId, req.user.id);
 
     res.setHeader('Content-Type', mimeType || 'application/octet-stream');
     res.setHeader(
@@ -130,19 +137,20 @@ export class CvsController {
 
   @Post('cvs/:cvId/send-email')
   sendEmail(
+    @Req() req: any,
     @Param('cvId', ParseIntPipe) cvId: number,
     @Body() dto: SendEmailDto,
   ) {
-    return this.cvsService.sendEmail(cvId, dto);
+    return this.cvsService.sendEmail(cvId, req.user.id, dto);
   }
 
   @Get('picker')
-  picker(@Query('q') q = '', @Query('limit') limit = '20') {
-    return this.cvsService.picker(q, Number(limit) || 20);
+  picker(@Req() req: any, @Query('q') q = '', @Query('limit') limit = '20') {
+    return this.cvsService.picker(q, Number(limit) || 20, req.user.id);
   }
 
   @Delete('cvs/:cvId')
-  remove(@Param('cvId', ParseIntPipe) cvId: number) {
-    return this.cvsService.remove(cvId);
+  remove(@Req() req: any, @Param('cvId', ParseIntPipe) cvId: number) {
+    return this.cvsService.remove(cvId, req.user.id);
   }
 }

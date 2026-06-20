@@ -97,4 +97,10 @@ export class UsersController {
     const updated = await this.usersService.clearAvatar(req.user.id);
     return this.usersService.toSafeUser(updated);
   }
+
+  @Delete('me')
+  @UseGuards(JwtAuthGuard)
+  async deleteMe(@Req() req: any) {
+    return this.usersService.deleteAccount(req.user.id);
+  }
 }

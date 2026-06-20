@@ -9,6 +9,7 @@ import { stat } from 'fs/promises';
 import { Repository } from 'typeorm';
 import { Cv } from './entities/cv.entity';
 import { Job } from '../jobs/entities/job.entity';
+import { User } from '../users/entities/user.entity';
 import { CandidateAnalysisService } from '../analysis/candidate-analysis.service';
 import { subtractStrings } from '../analysis/analysis.utils';
 import { MailService } from '../mail/mail.service';
@@ -29,20 +30,24 @@ export class CvsService {
     private readonly mailService: MailService,
   ) {}
 
-  async listForJob(jobId: number) {
-    const job = await this.jobRepo.findOne({ where: { id: jobId } });
+  async listForJob(jobId: number, userId: number) {
+    const job = await this.jobRepo.findOne({
+      where: { id: jobId, owner: { id: userId } },
+    });
     if (!job) throw new NotFoundException('Postul nu a fost găsit');
 
     const rows = await this.cvRepo.find({
-      where: { job: { id: jobId } },
+      where: { job: { id: jobId }, owner: { id: userId } },
       order: { createdAt: 'DESC' },
     });
 
     return rows.map((cv) => this.sanitizeAnalysisOnRead(cv));
   }
 
-  async uploadForJob(jobId: number, file: Express.Multer.File) {
-    const job = await this.jobRepo.findOne({ where: { id: jobId } });
+  async uploadForJob(jobId: number, userId: number, file: Express.Multer.File) {
+    const job = await this.jobRepo.findOne({
+      where: { id: jobId, owner: { id: userId } },
+    });
     if (!job) throw new NotFoundException('Postul nu a fost găsit');
 
     if ((job as any).status === 'CLOSED') {
@@ -76,14 +81,15 @@ export class CvsService {
 
       analysisSummary: null,
       analysisRaw: null,
+      owner: { id: userId } as User,
     });
 
     return this.cvRepo.save(cv);
   }
 
-  async findOne(cvId: number) {
+  async findOne(cvId: number, userId: number) {
     const cv = await this.cvRepo.findOne({
-      where: { id: cvId },
+      where: { id: cvId, owner: { id: userId } },
       relations: { job: true },
     });
 
@@ -94,8 +100,10 @@ export class CvsService {
     return this.sanitizeAnalysisOnRead(cv);
   }
 
-  async getFileInfo(cvId: number) {
-    const cv = await this.cvRepo.findOne({ where: { id: cvId } });
+  async getFileInfo(cvId: number, userId: number) {
+    const cv = await this.cvRepo.findOne({
+      where: { id: cvId, owner: { id: userId } },
+    });
     if (!cv) throw new NotFoundException('CV-ul nu a fost găsit');
     if (!cv.filePath) throw new BadRequestException('CV nu are filePath');
 
@@ -106,17 +114,19 @@ export class CvsService {
     };
   }
 
-  async remove(cvId: number) {
-    const cv = await this.cvRepo.findOne({ where: { id: cvId } });
+  async remove(cvId: number, userId: number) {
+    const cv = await this.cvRepo.findOne({
+      where: { id: cvId, owner: { id: userId } },
+    });
     if (!cv) throw new NotFoundException('CV-ul nu a fost găsit');
 
     await this.cvRepo.remove(cv);
     return { ok: true as const };
   }
 
-  async analyzeCv(jobId: number, cvId: number) {
+  async analyzeCv(jobId: number, cvId: number, userId: number) {
     const cv = await this.cvRepo.findOne({
-      where: { id: cvId },
+      where: { id: cvId, owner: { id: userId } },
       relations: { job: true },
     });
 
@@ -132,7 +142,9 @@ export class CvsService {
       return this.sanitizeAnalysisOnRead(cv);
     }
 
-    const job = await this.jobRepo.findOne({ where: { id: jobId } });
+    const job = await this.jobRepo.findOne({
+      where: { id: jobId, owner: { id: userId } },
+    });
     if (!job) {
       throw new NotFoundException('Postul nu a fost găsit');
     }
@@ -272,10 +284,15 @@ export class CvsService {
     return cv;
   }
 
-  async sendEmail(cvId: number, dto: SendEmailDto) {
+  async sendEmail(cvId: number, userId: number, dto: SendEmailDto) {
     if (!cvId || Number.isNaN(cvId)) {
       throw new BadRequestException('CV invalid');
     }
+
+    const cv = await this.cvRepo.findOne({
+      where: { id: cvId, owner: { id: userId } },
+    });
+    if (!cv) throw new NotFoundException('CV-ul nu a fost gÄƒsit');
 
     const hasText = typeof dto.text === 'string' && dto.text.trim().length > 0;
     const hasHtml = typeof dto.html === 'string' && dto.html.trim().length > 0;
@@ -294,11 +311,12 @@ export class CvsService {
     return { ok: true };
   }
 
-  async picker(q: string, limit = 20) {
+  async picker(q: string, limit = 20, userId: number) {
     const take = Math.min(50, Math.max(5, limit));
     const term = q.trim().toLowerCase();
 
     const qb = this.cvRepo.createQueryBuilder('cv');
+    qb.innerJoin('cv.owner', 'owner').andWhere('owner.id = :userId', { userId });
 
     if (term) {
       qb.where('LOWER(cv.candidateName) LIKE :t OR LOWER(cv.email) LIKE :t', {

@@ -69,7 +69,7 @@ export class DashboardService {
     mysql: 'MySQL',
   };
 
-  async home(): Promise<HomeDashboardDto> {
+  async home(userId: number): Promise<HomeDashboardDto> {
     const now = new Date();
 
     const d30 = new Date(now);
@@ -90,18 +90,26 @@ export class DashboardService {
       scoreEvolution,
       topSkillsLast30,
     ] = await Promise.all([
-      this.cvRepo.count({ where: { createdAt: Between(d30, now) } }),
-      this.cvRepo.count({ where: { createdAt: Between(d60, d30) } }),
-
       this.cvRepo.count({
-        where: { createdAt: Between(d30, now), status: 'Analizat' },
+        where: { createdAt: Between(d30, now), owner: { id: userId } },
+      }),
+      this.cvRepo.count({
+        where: { createdAt: Between(d60, d30), owner: { id: userId } },
       }),
 
-      this.getAvgMatchLast30(d30, now),
-      this.countInvitedLast30(d30, now),
+      this.cvRepo.count({
+        where: {
+          createdAt: Between(d30, now),
+          status: 'Analizat',
+          owner: { id: userId },
+        },
+      }),
 
-      this.getScoreEvolutionWeekly(d56, now),
-      this.getTopSkillsLast30(d30, now),
+      this.getAvgMatchLast30(d30, now, userId),
+      this.countInvitedLast30(d30, now, userId),
+
+      this.getScoreEvolutionWeekly(d56, now, userId),
+      this.getTopSkillsLast30(d30, now, userId),
     ]);
 
     const cvsUploadedDeltaPct =
@@ -137,30 +145,32 @@ export class DashboardService {
     };
   }
 
-  private async getAvgMatchLast30(from: Date, to: Date) {
+  private async getAvgMatchLast30(from: Date, to: Date, userId: number) {
     const row = await this.cvRepo
       .createQueryBuilder('cv')
       .select('AVG("cv"."matchScore")', 'avg')
       .where(`"cv"."status" = :st`, { st: 'Analizat' })
       .andWhere(`"cv"."createdAt" BETWEEN :from AND :to`, { from, to })
+      .andWhere(`"cv"."ownerId" = :userId`, { userId })
       .getRawOne();
 
     return Math.round(Number(row?.avg ?? 0));
   }
 
-  private async countInvitedLast30(from: Date, to: Date) {
+  private async countInvitedLast30(from: Date, to: Date, userId: number) {
     const row = await this.cvRepo
       .createQueryBuilder('cv')
       .select('COUNT(*)', 'cnt')
       .where(`"cv"."analysisRaw" IS NOT NULL`)
       .andWhere(`"cv"."analysisRaw"->>'recommendation' = :r`, { r: 'INVITA' })
       .andWhere(`"cv"."createdAt" BETWEEN :from AND :to`, { from, to })
+      .andWhere(`"cv"."ownerId" = :userId`, { userId })
       .getRawOne();
 
     return Number(row?.cnt ?? 0);
   }
 
-  private async getScoreEvolutionWeekly(from: Date, to: Date) {
+  private async getScoreEvolutionWeekly(from: Date, to: Date, userId: number) {
     const rows = await this.cvRepo
       .createQueryBuilder('cv')
       .select(
@@ -171,6 +181,7 @@ export class DashboardService {
       .addSelect('COUNT(*)', 'cnt')
       .where(`"cv"."status" = :st`, { st: 'Analizat' })
       .andWhere(`"cv"."createdAt" BETWEEN :from AND :to`, { from, to })
+      .andWhere(`"cv"."ownerId" = :userId`, { userId })
       .groupBy('week')
       .orderBy('week', 'ASC')
       .getRawMany();
@@ -216,6 +227,7 @@ export class DashboardService {
   private async getTopSkillsLast30(
     from: Date,
     to: Date,
+    userId: number,
   ): Promise<SkillPoint[]> {
     // skills este text[] la tine, deci unnest merge.
     // Alegem doar CV-urile analizate, ca să fie relevant.
@@ -228,7 +240,8 @@ export class DashboardService {
           .select(`unnest("cv"."skills")`, 'skill')
           .from(Cv, 'cv')
           .where(`"cv"."status" = :st`, { st: 'Analizat' })
-          .andWhere(`"cv"."createdAt" BETWEEN :from AND :to`, { from, to });
+          .andWhere(`"cv"."createdAt" BETWEEN :from AND :to`, { from, to })
+          .andWhere(`"cv"."ownerId" = :userId`, { userId });
       }, 't')
       .groupBy('skill')
       .orderBy('cnt', 'DESC')

@@ -4,8 +4,10 @@ import {
   Column,
   CreateDateColumn,
   OneToMany,
+  ManyToOne,
 } from 'typeorm';
 import { Cv } from '../../cvs/entities/cv.entity';
+import { User } from '../../users/entities/user.entity';
 
 export type JobStatus = 'ACTIVE' | 'CLOSED';
 
@@ -55,4 +57,10 @@ export class Job {
 
   @OneToMany(() => Cv, (cv) => cv.job, { cascade: true })
   cvs!: Cv[];
+
+  @ManyToOne(() => User, {
+    nullable: true,
+    onDelete: 'CASCADE',
+  })
+  owner!: User | null;
 }
