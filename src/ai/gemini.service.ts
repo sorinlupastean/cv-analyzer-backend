@@ -87,6 +87,7 @@ export class GeminiService {
     mimeType: string,
     jobText: string,
   ): Promise<GeminiJobCvAnalysis> {
+    const analysisDate = this.getBucharestDateIso();
     const mt = String(mimeType || '').toLowerCase();
     const bytes = await readFile(filePath);
     const candidatePhotoDataUrl = await this.extractCandidatePhotoDataUrl(
@@ -165,6 +166,11 @@ Rules:
   - If the CV mentions only a single month/year for an activity, put that same value in both startDate and endDate.
   - If the activity is still ongoing, set endDate to "Prezent".
   - Prefer the format "Martie 2023" instead of English month names.
+- Temporal context:
+  - Today is "${analysisDate}" in Europe/Bucharest.
+  - Use this date to decide whether an activity is past, present, or future.
+  - Do NOT describe 2024 or 2025 as future when today's date is later than those years.
+  - Mark an activity as future only if its startDate or endDate is strictly after today.
 - CRITICAL: evaluate FIT strictly vs JOB.
   If JOB is "oier" and candidate CV is only IT or construction, matchScore must be LOW (0..25) and recommendation should be RESPINGE or REVIZUIRE with clear redFlags.
 - Use this scoring rubric:
@@ -189,6 +195,8 @@ Task:
 
 JOB:
 ${jobText}
+
+Current date (Europe/Bucharest): ${analysisDate}
 
 ${schema}
 `.trim();
@@ -244,7 +252,7 @@ ${schema}
           throw new BadRequestException('Gemini a returnat un JSON invalid.');
         }
 
-        return this.sanitizeAnalysis(parsed, candidatePhotoDataUrl);
+        return this.sanitizeAnalysis(parsed, candidatePhotoDataUrl, analysisDate);
       }
 
       const isDocx =
@@ -295,7 +303,7 @@ ${cvText}
           throw new BadRequestException('Gemini a returnat un JSON invalid.');
         }
 
-        return this.sanitizeAnalysis(parsed, candidatePhotoDataUrl);
+        return this.sanitizeAnalysis(parsed, candidatePhotoDataUrl, analysisDate);
       }
     } catch (error) {
       this.logger.warn(
@@ -547,6 +555,7 @@ ${cvText}
   private sanitizeAnalysis(
     input: unknown,
     candidatePhotoDataUrl: string | null,
+    analysisDateIso: string,
   ): GeminiJobCvAnalysis {
     const obj = (input && typeof input === 'object' ? input : {}) as any;
 
@@ -636,7 +645,9 @@ ${cvText}
 
       matchedRequirements: toArrayStrings(obj.matchedRequirements, 15),
       missingRequirements: toArrayStrings(obj.missingRequirements, 15),
-      redFlags: toArrayStrings(obj.redFlags, 10),
+      redFlags: toArrayStrings(obj.redFlags, 10).filter(
+        (flag) => !this.isFalseFutureFlag(flag, analysisDateIso),
+      ),
 
       summary: String(obj.summary || '')
         .trim()
@@ -773,6 +784,7 @@ ${cvText}
         evidence,
       },
       candidatePhotoDataUrl,
+      this.getBucharestDateIso(),
     );
   }
 
@@ -955,6 +967,30 @@ ${cvText}
     const penalty = Math.min(input.redFlagsCount * 4, 25) + Math.min(input.missingCount * 2, 10);
 
     return Math.max(0, Math.min(100, base + skillsScore + matchScore + textScore + githubScore - penalty));
+  }
+
+  private getBucharestDateIso(now = new Date()): string {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Bucharest',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(now);
+  }
+
+  private isFalseFutureFlag(flag: string, analysisDateIso: string): boolean {
+    const text = normalizeUnicodeText(flag).toLowerCase();
+    if (!text.includes('viitor') && !text.includes('future')) return false;
+
+    const analysisYear = Number(analysisDateIso.slice(0, 4));
+    if (!Number.isFinite(analysisYear)) return false;
+
+    const years = Array.from(text.matchAll(/\b(19|20)\d{2}\b/g), (match) =>
+      Number(match[0]),
+    );
+
+    if (!years.length) return false;
+    return years.every((year) => year <= analysisYear);
   }
 
   private extractJson(s: string) {

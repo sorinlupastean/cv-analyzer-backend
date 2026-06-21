@@ -42,6 +42,10 @@ export class InterviewEvent {
   @Column({ type: 'int', nullable: true })
   cvId!: number | null;
 
+  @Index()
+  @Column({ type: 'int', nullable: true })
+  createdById!: number | null;
+
   @Column({ type: 'varchar', length: 180 })
   candidateName!: string;
 

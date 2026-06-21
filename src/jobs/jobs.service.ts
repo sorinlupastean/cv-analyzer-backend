@@ -34,7 +34,9 @@ export class JobsService {
       order: { createdAt: 'DESC' },
     });
 
-    return jobs.then((rows) => rows.map((job) => this.withOnlyAnalyzedCvs(job)));
+    return jobs.then((rows) =>
+      rows.map((job) => this.withOnlyAnalyzedCvs(job)),
+    );
   }
 
   async findOne(id: number, userId: number) {
@@ -104,7 +106,9 @@ export class JobsService {
 
     if (!job) throw new NotFoundException('Job not found');
 
-    const analyzedCvs = (Array.isArray(job.cvs) ? job.cvs : [])
+    const ownedCvs = Array.isArray(job.cvs) ? job.cvs : [];
+
+    const analyzedCvs = ownedCvs
       .filter((cv) => this.isAnalyzedCv(cv))
       .map((cv) => this.buildCandidateCard(cv, job.title))
       .sort((a, b) => {
@@ -164,7 +168,7 @@ export class JobsService {
         requirements: normalizeUnicodeText(job.requirements) || job.requirements,
       },
       summary: {
-        totalCandidates: Array.isArray(job.cvs) ? job.cvs.length : 0,
+        totalCandidates: ownedCvs.length,
         analyzedCandidates: analyzedCvs.length,
         shortlistCount: candidates.length,
         averageScore,
@@ -197,8 +201,7 @@ export class JobsService {
   }
 
   private isAnalyzedCv(cv: Cv): boolean {
-    const status = String(cv?.status ?? '').toLowerCase();
-    return status.includes('analiz') || Boolean(cv?.analysisRaw);
+    return Boolean(cv?.analysisRaw);
   }
 
   private buildCandidateCard(cv: Cv, jobTitle: string): RecruiterCopilotCandidate {

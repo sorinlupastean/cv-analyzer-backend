@@ -6,10 +6,13 @@ import {
   Param,
   Query,
   Body,
+  Req,
+  UseGuards,
 } from '@nestjs/common';
 import { InterviewsService } from './interviews.service';
 import { CreateInterviewDto } from './dto/create-interview.dto';
 import { UpdateInterviewDto } from './dto/update-interview.dto';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @Controller('interviews')
 export class InterviewsController {
@@ -17,24 +20,32 @@ export class InterviewsController {
 
   // Listare pentru calendar (interval)
   @Get()
-  list(@Query('from') from: string, @Query('to') to: string) {
-    return this.service.list(from, to);
+  @UseGuards(JwtAuthGuard)
+  list(@Req() req: any, @Query('from') from: string, @Query('to') to: string) {
+    return this.service.list(from, to, req.user);
   }
 
   @Post()
-  create(@Body() dto: CreateInterviewDto) {
-    return this.service.create(dto);
+  @UseGuards(JwtAuthGuard)
+  create(@Req() req: any, @Body() dto: CreateInterviewDto) {
+    return this.service.create(dto, req.user);
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateInterviewDto) {
-    return this.service.update(Number(id), dto);
+  @UseGuards(JwtAuthGuard)
+  update(@Req() req: any, @Param('id') id: string, @Body() dto: UpdateInterviewDto) {
+    return this.service.update(Number(id), dto, req.user);
   }
 
   // Anulare “admin” (tu)
   @Post(':id/cancel')
-  cancel(@Param('id') id: string, @Body() body: { reason?: string }) {
-    return this.service.cancel(Number(id), body?.reason);
+  @UseGuards(JwtAuthGuard)
+  cancel(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() body: { reason?: string },
+  ) {
+    return this.service.cancel(Number(id), body?.reason, req.user);
   }
 
   // Confirmare “candidate” via email link

@@ -1,10 +1,11 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { randomBytes } from 'crypto';
 import { InterviewEvent } from './entities/interview-event.entity';
 import { CreateInterviewDto } from './dto/create-interview.dto';
@@ -12,6 +13,12 @@ import { UpdateInterviewDto } from './dto/update-interview.dto';
 import { MailService } from '../mail/mail.service';
 import type { DeepPartial } from 'typeorm';
 import type { InterviewStatus } from './entities/interview-event.entity';
+
+type CurrentUser = {
+  id: number;
+  email: string;
+  role?: string | null;
+};
 
 @Injectable()
 export class InterviewsService {
@@ -21,7 +28,7 @@ export class InterviewsService {
     private readonly mail: MailService,
   ) {}
 
-  async list(fromIso: string, toIso: string) {
+  async list(fromIso: string, toIso: string, user: CurrentUser) {
     const from = new Date(fromIso);
     const to = new Date(toIso);
 
@@ -29,15 +36,25 @@ export class InterviewsService {
       throw new BadRequestException('Interval invalid.');
     }
 
-    return this.repo.find({
-      where: {
-        startAt: Between(from, to),
-      },
-      order: { startAt: 'ASC' },
-    });
+    const qb = this.repo
+      .createQueryBuilder('e')
+      .where('e.startAt BETWEEN :from AND :to', { from, to })
+      .orderBy('e.startAt', 'ASC');
+
+    if (!this.canViewAllInterviews(user)) {
+      qb.andWhere(
+        '(LOWER(e.candidateEmail) = LOWER(:email) OR e.createdById = :userId)',
+        {
+          email: user.email?.trim() || '',
+          userId: user.id,
+        },
+      );
+    }
+
+    return qb.getMany();
   }
 
-  async create(dto: CreateInterviewDto) {
+  async create(dto: CreateInterviewDto, user: CurrentUser) {
     const startAt = new Date(dto.startAt);
     const endAt = new Date(dto.endAt);
 
@@ -50,7 +67,6 @@ export class InterviewsService {
       );
     }
 
-    // Conflict check: evită suprapuneri
     const overlap = await this.repo
       .createQueryBuilder('e')
       .where('e.status != :cancelled', { cancelled: 'CANCELLED' })
@@ -65,11 +81,12 @@ export class InterviewsService {
 
     const confirmToken = randomBytes(24).toString('hex');
     const cancelToken = randomBytes(24).toString('hex');
-    const expires = new Date(Date.now() + 1000 * 60 * 60 * 48); // 48h
+    const expires = new Date(Date.now() + 1000 * 60 * 60 * 48);
 
     const entity = this.repo.create({
       title: dto.title.trim(),
       cvId: dto.cvId ?? null,
+      createdById: user.id,
       candidateName: dto.candidateName.trim(),
       candidateEmail: dto.candidateEmail.trim(),
       location: dto.location?.trim() ?? null,
@@ -83,14 +100,16 @@ export class InterviewsService {
       cancelToken,
     } satisfies DeepPartial<InterviewEvent>);
 
-    const saved = await this.repo.save(entity); // acum e InterviewEvent, nu InterviewEvent[]
+    const saved = await this.repo.save(entity);
     await this.sendCandidateInvite(saved);
     return saved;
   }
 
-  async update(id: number, dto: UpdateInterviewDto) {
+  async update(id: number, dto: UpdateInterviewDto, user: CurrentUser) {
     const ev = await this.repo.findOne({ where: { id } });
     if (!ev) throw new NotFoundException('Programarea nu există.');
+
+    this.assertCanManageInterview(ev, user);
 
     if (ev.status === 'CANCELLED') {
       throw new BadRequestException('Nu poți edita o programare anulată.');
@@ -108,7 +127,6 @@ export class InterviewsService {
       );
     }
 
-    // Conflict check (exclude current id)
     const overlap = await this.repo
       .createQueryBuilder('e')
       .where('e.id != :id', { id })
@@ -135,16 +153,14 @@ export class InterviewsService {
     });
 
     const saved = await this.repo.save(ev);
-
-    // Opțional: dacă schimbi ora sau email-ul, poți retrimite invitația
-    // await this.sendCandidateInvite(saved);
-
     return saved;
   }
 
-  async cancel(id: number, reason?: string) {
+  async cancel(id: number, reason?: string, user?: CurrentUser) {
     const ev = await this.repo.findOne({ where: { id } });
     if (!ev) throw new NotFoundException('Programarea nu există.');
+
+    this.assertCanManageInterview(ev, user);
 
     if (ev.status === 'CANCELLED') return ev;
 
@@ -155,8 +171,6 @@ export class InterviewsService {
       : ev.notes;
 
     const saved = await this.repo.save(ev);
-
-    // opțional: email de anulare către candidat
     await this.sendCandidateCancellation(saved);
 
     return saved;
@@ -189,13 +203,42 @@ export class InterviewsService {
     const ev = await this.repo.findOne({ where: { cancelToken: token } });
     if (!ev) throw new NotFoundException('Token invalid sau deja folosit.');
 
-    // dacă e deja anulată, returnează ok (idempotent)
     if (ev.status === 'CANCELLED') return ev;
 
     ev.status = 'CANCELLED';
     ev.cancelledAt = new Date();
 
     return this.repo.save(ev);
+  }
+
+  private canViewAllInterviews(user?: CurrentUser | null) {
+    const role = (user?.role || '').trim().toLowerCase();
+
+    if (!role) return false;
+
+    return (
+      role.includes('admin') ||
+      role.includes('recruit') ||
+      role.includes('hr') ||
+      role.includes('manager') ||
+      role.includes('lead') ||
+      role.includes('owner')
+    );
+  }
+
+  private assertCanManageInterview(
+    interview: InterviewEvent,
+    user?: CurrentUser | null,
+  ) {
+    if (this.canViewAllInterviews(user)) return;
+
+    if (interview.createdById && user && interview.createdById === user.id) {
+      return;
+    }
+
+    throw new ForbiddenException(
+      'Poți modifica doar programările create de tine.',
+    );
   }
 
   private async sendCandidateInvite(ev: InterviewEvent) {
